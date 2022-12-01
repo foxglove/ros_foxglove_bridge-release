@@ -1,0 +1,12 @@
+Source: ros-noetic-foxglove-bridge
+Section: misc
+Priority: optional
+Maintainer: John Hurliman <john@foxglove.dev>
+Build-Depends: debhelper (>= 9.0.0), catkin, libasio-dev, libgmock-dev, libgtest-dev, libnodelet-dev, libnodeletlib-dev, libros-rosgraph-msgs-dev, libroscpp-core-dev, libroscpp-dev, libroslib-dev, librostest-dev, libssl-dev, libstd-msgs-dev, libwebsocketpp-dev, nlohmann-json3-dev, python3-nodelet, python3-rosgraph-msgs, python3-roslib, python3-rostest, python3-rosunit, python3-std-msgs, ros-environment, ros-noetic-ros-babel-fish, ros-rosgraph-msgs, ros-std-msgs
+Homepage: https://github.com/foxglove/ros-foxglove-bridge
+Standards-Version: 3.9.2
+
+Package: ros-noetic-foxglove-bridge
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, libnodelet-dev, libnodeletlib-dev, libros-rosgraph-msgs-dev, libroscpp-core-dev, libroscpp-dev, libroslib-dev, openssl, python3-nodelet, python3-rosgraph-msgs, python3-roslib, ros-noetic-ros-babel-fish, ros-rosgraph-msgs
+Description: ROS Foxglove Bridge
