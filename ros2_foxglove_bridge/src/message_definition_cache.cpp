@@ -1,5 +1,6 @@
 #include "foxglove_bridge/message_definition_cache.hpp"
 
+#include <filesystem>
 #include <fstream>
 #include <optional>
 #include <regex>
@@ -99,6 +100,23 @@ static std::string delimiter(const DefinitionIdentifier& definition_identifier) 
   return result;
 }
 
+static std::vector<std::string> split_string(const std::string& str,
+                                             const std::string& delimiter = "\n") {
+  std::vector<std::string> strings;
+  std::string::size_type pos = 0;
+  std::string::size_type prev = 0;
+
+  while ((pos = str.find(delimiter, prev)) != std::string::npos) {
+    strings.push_back(str.substr(prev, pos - prev));
+    prev = pos + delimiter.size();
+  }
+
+  // Get the last substring (or only, if delimiter is not found)
+  strings.push_back(str.substr(prev));
+
+  return strings;
+}
+
 MessageSpec::MessageSpec(MessageDefinitionFormat format, std::string text,
                          const std::string& package_context)
     : dependencies(parse_dependencies(format, text, package_context))
@@ -117,15 +135,36 @@ const MessageSpec& MessageDefinitionCache::load_message_spec(
     throw std::invalid_argument("Invalid package resource name: " +
                                 definition_identifier.package_resource_name);
   }
-  std::string package = match[1];
-  std::string share_dir = ament_index_cpp::get_package_share_directory(package);
-  std::ifstream file{share_dir + "/msg/" + match[2].str() +
-                     extension_for_format(definition_identifier.format)};
-  if (!file.good()) {
+  const std::string package = match[1].str();
+  const std::string filename = match[2].str() + extension_for_format(definition_identifier.format);
+
+  // Get the package share directory, or throw a PackageNotFoundError
+  const std::string share_dir = ament_index_cpp::get_package_share_directory(package);
+
+  // Get the rosidl_interfaces index contents for this package
+  std::string index_contents;
+  if (!ament_index_cpp::get_resource("rosidl_interfaces", package, index_contents)) {
     throw DefinitionNotFoundError(definition_identifier.package_resource_name);
   }
 
-  std::string contents{std::istreambuf_iterator(file), {}};
+  // Find the first line that ends with the filename we're looking for
+  const auto lines = split_string(index_contents);
+  const auto it = std::find_if(lines.begin(), lines.end(), [&filename](const std::string& line) {
+    std::filesystem::path filePath(line);
+    return filePath.filename() == filename;
+  });
+  if (it == lines.end()) {
+    throw DefinitionNotFoundError(definition_identifier.package_resource_name);
+  }
+
+  // Read the file
+  const std::string full_path = share_dir + std::filesystem::path::preferred_separator + *it;
+  std::ifstream file{full_path};
+  if (!file.good()) {
+    throw DefinitionNotFoundError(definition_identifier.package_resource_name);
+  }
+  const std::string contents{std::istreambuf_iterator(file), {}};
+
   const MessageSpec& spec =
     msg_specs_by_definition_identifier_
       .emplace(definition_identifier,
