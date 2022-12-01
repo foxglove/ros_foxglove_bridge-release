@@ -1,7 +1,0 @@
-ros-melodic-foxglove-bridge (0.1.0-1bionic) bionic; urgency=high
-
-  * Initial release, topic subscription only
-
- -- Foxglove <contact@foxglove.dev>  Mon, 21 Nov 2022 06:00:00 -0000
-
-
