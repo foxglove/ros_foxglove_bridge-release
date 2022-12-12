@@ -1,6 +1,7 @@
 #include <atomic>
 #include <chrono>
 #include <memory>
+#include <regex>
 #include <thread>
 #include <unordered_set>
 
@@ -22,7 +23,7 @@ using namespace std::placeholders;
 using LogLevel = foxglove::WebSocketLogLevel;
 using Subscription = rclcpp::GenericSubscription::SharedPtr;
 using SubscriptionsByClient = std::map<foxglove::ConnHandle, Subscription, std::owner_less<>>;
-using Publication = std::pair<rclcpp::GenericPublisher::SharedPtr, rclcpp::PublisherOptions>;
+using Publication = rclcpp::GenericPublisher::SharedPtr;
 using ClientPublications = std::unordered_map<foxglove::ClientChannelId, Publication>;
 using PublicationsByClient = std::map<foxglove::ConnHandle, ClientPublications, std::owner_less<>>;
 
@@ -90,6 +91,28 @@ public:
     maxQosDepthDescription.integer_range[0].step = 1;
     this->declare_parameter("max_qos_depth", int(DEFAULT_MAX_QOS_DEPTH), maxQosDepthDescription);
 
+    auto topicWhiteListDescription = rcl_interfaces::msg::ParameterDescriptor{};
+    topicWhiteListDescription.name = "topic_whitelist";
+    topicWhiteListDescription.type = rcl_interfaces::msg::ParameterType::PARAMETER_STRING_ARRAY;
+    topicWhiteListDescription.description =
+      "List of regular expressions (ECMAScript) of whitelisted topic names.";
+    topicWhiteListDescription.read_only = true;
+    this->declare_parameter<std::vector<std::string>>(
+      topicWhiteListDescription.name, std::vector<std::string>({".*"}), topicWhiteListDescription);
+
+    const auto regexPatterns =
+      this->get_parameter(topicWhiteListDescription.name).as_string_array();
+    _topicWhitelistPatterns.reserve(regexPatterns.size());
+    for (const auto& pattern : regexPatterns) {
+      try {
+        _topicWhitelistPatterns.push_back(
+          std::regex(pattern, std::regex_constants::ECMAScript | std::regex_constants::icase));
+      } catch (const std::exception& ex) {
+        RCLCPP_ERROR(this->get_logger(), "Ignoring invalid regular expression '%s': %s",
+                     pattern.c_str(), ex.what());
+      }
+    }
+
     const auto useTLS = this->get_parameter("tls").as_bool();
     const auto certfile = this->get_parameter("certfile").as_string();
     const auto keyfile = this->get_parameter("keyfile").as_string();
@@ -128,6 +151,9 @@ public:
     // Start the thread polling for rosgraph changes
     _rosgraphPollThread =
       std::make_unique<std::thread>(std::bind(&FoxgloveBridge::rosgraphPollThread, this));
+
+    _clientPublishCallbackGroup =
+      this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
   }
 
   ~FoxgloveBridge() {
@@ -167,14 +193,31 @@ public:
     std::unordered_set<TopicAndDatatype, PairHash> latestTopics;
     latestTopics.reserve(topicNamesAndTypes.size());
     bool hasClockTopic = false;
-    for (const auto& [topicName, datatypes] : topicNamesAndTypes) {
-      for (const auto& datatype : datatypes) {
-        // Check if a /clock topic is published
-        if (topicName == "/clock" && datatype == "rosgraph_msgs/msg/Clock") {
-          hasClockTopic = true;
+    for (const auto& topicNamesAndType : topicNamesAndTypes) {
+      const auto& topicName = topicNamesAndType.first;
+      const auto& datatypes = topicNamesAndType.second;
+
+      // Check if a /clock topic is published
+      hasClockTopic = hasClockTopic || (topicName == "/clock" &&
+                                        std::find(datatypes.begin(), datatypes.end(),
+                                                  "rosgraph_msgs/msg/Clock") != datatypes.end());
+
+      // Ignore the topic if it is not on the topic whitelist
+      if (std::find_if(_topicWhitelistPatterns.begin(), _topicWhitelistPatterns.end(),
+                       [&topicName](const auto& regex) {
+                         return std::regex_match(topicName, regex);
+                       }) != _topicWhitelistPatterns.end()) {
+        for (const auto& datatype : datatypes) {
+          latestTopics.emplace(topicName, datatype);
         }
-        latestTopics.emplace(topicName, datatype);
       }
+    }
+
+    if (const auto numIgnoredTopics = topicNamesAndTypes.size() - latestTopics.size()) {
+      RCLCPP_DEBUG(
+        this->get_logger(),
+        "%zu topics have been ignored as they do not match any pattern on the topic whitelist",
+        numIgnoredTopics);
     }
 
     // Enable or disable simulated time based on the presence of a /clock topic
@@ -288,11 +331,13 @@ private:
 
   std::unique_ptr<foxglove::ServerInterface> _server;
   foxglove::MessageDefinitionCache _messageDefinitionCache;
+  std::vector<std::regex> _topicWhitelistPatterns;
   std::unordered_map<TopicAndDatatype, foxglove::Channel, PairHash> _advertisedTopics;
   std::unordered_map<foxglove::ChannelId, TopicAndDatatype> _channelToTopicAndDatatype;
   std::unordered_map<foxglove::ChannelId, SubscriptionsByClient> _subscriptions;
   std::unordered_map<foxglove::ChannelId, rclcpp::CallbackGroup::SharedPtr> _channelCallbackGroups;
   PublicationsByClient _clientAdvertisedTopics;
+  rclcpp::CallbackGroup::SharedPtr _clientPublishCallbackGroup;
   std::mutex _subscriptionsMutex;
   std::mutex _clientAdvertisementsMutex;
   std::unique_ptr<std::thread> _rosgraphPollThread;
@@ -485,8 +530,7 @@ private:
     const auto& topicType = advertisement.schemaName;
     rclcpp::QoS qos{rclcpp::QoSInitialization::from_rmw(rmw_qos_profile_default)};
     rclcpp::PublisherOptions publisherOptions{};
-    publisherOptions.callback_group =
-      this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    publisherOptions.callback_group = _clientPublishCallbackGroup;
     auto publisher = this->create_generic_publisher(topicName, topicType, qos, publisherOptions);
 
     RCLCPP_INFO(this->get_logger(), "Client %s is advertising \"%s\" (%s) on channel %d",
@@ -494,8 +538,7 @@ private:
                 advertisement.channelId);
 
     // Store the new topic advertisement
-    auto publication = std::make_pair(publisher, publisherOptions);
-    clientPublications.emplace(advertisement.channelId, std::move(publication));
+    clientPublications.emplace(advertisement.channelId, std::move(publisher));
   }
 
   void clientUnadvertiseHandler(foxglove::ChannelId channelId, foxglove::ConnHandle hdl) {
@@ -520,7 +563,7 @@ private:
       return;
     }
 
-    const auto& publisher = it2->second.first;
+    const auto& publisher = it2->second;
     RCLCPP_INFO(this->get_logger(),
                 "Client %s is no longer advertising %s (%zu subscribers) on channel %d",
                 _server->remoteEndpointString(hdl).c_str(), publisher->get_topic_name(),
@@ -558,7 +601,7 @@ private:
                     clientPublications.size());
         return;
       }
-      publisher = it2->second.first;
+      publisher = it2->second;
     }
 
     // Copy the message payload into a SerializedMessage object
