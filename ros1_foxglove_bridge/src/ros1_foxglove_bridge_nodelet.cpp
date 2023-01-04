@@ -1,6 +1,5 @@
 #define ASIO_STANDALONE
 
-#include <atomic>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -42,10 +41,13 @@ public:
     auto& nhp = getPrivateNodeHandle();
     const auto address = nhp.param<std::string>("address", DEFAULT_ADDRESS);
     const int port = nhp.param<int>("port", DEFAULT_PORT);
+    const auto send_buffer_limit = static_cast<size_t>(
+      nhp.param<int>("send_buffer_limit", foxglove::DEFAULT_SEND_BUFFER_LIMIT_BYTES));
     const auto useTLS = nhp.param<bool>("tls", false);
     const auto certfile = nhp.param<std::string>("certfile", "");
     const auto keyfile = nhp.param<std::string>("keyfile", "");
     _maxUpdateMs = static_cast<size_t>(nhp.param<int>("max_update_ms", DEFAULT_MAX_UPDATE_MS));
+    _useSimTime = nhp.param<bool>("/use_sim_time", false);
 
     const auto regexPatterns = nhp.param<std::vector<std::string>>("topic_whitelist", {".*"});
     _topicWhitelistPatterns.reserve(regexPatterns.size());
@@ -62,14 +64,22 @@ public:
              foxglove::WebSocketUserAgent());
 
     try {
+      std::vector<std::string> serverCapabilities = {
+        foxglove::CAPABILITY_CLIENT_PUBLISH,
+      };
+      if (_useSimTime) {
+        serverCapabilities.push_back(foxglove::CAPABILITY_TIME);
+      }
+
       const auto logHandler =
         std::bind(&FoxgloveBridge::logHandler, this, std::placeholders::_1, std::placeholders::_2);
       if (useTLS) {
         _server = std::make_unique<foxglove::Server<foxglove::WebSocketTls>>(
-          "foxglove_bridge", std::move(logHandler), certfile, keyfile);
+          "foxglove_bridge", std::move(logHandler), serverCapabilities, send_buffer_limit, certfile,
+          keyfile);
       } else {
         _server = std::make_unique<foxglove::Server<foxglove::WebSocketNoTls>>(
-          "foxglove_bridge", std::move(logHandler));
+          "foxglove_bridge", std::move(logHandler), serverCapabilities, send_buffer_limit);
       }
 
       _server->setSubscribeHandler(std::bind(&FoxgloveBridge::subscribeHandler, this,
@@ -86,6 +96,13 @@ public:
       _server->start(address, static_cast<uint16_t>(port));
 
       updateAdvertisedTopics(ros::TimerEvent());
+
+      if (_useSimTime) {
+        _clockSubscription = getMTNodeHandle().subscribe<rosgraph_msgs::Clock>(
+          "/clock", 10, [&](const rosgraph_msgs::Clock::ConstPtr msg) {
+            _server->broadcastTime(msg->clock.toNSec());
+          });
+      }
     } catch (const std::exception& err) {
       ROS_ERROR("Failed to start websocket server: %s", err.what());
       // Rethrow exception such that the nodelet is unloaded.
@@ -329,13 +346,9 @@ private:
 
     std::unordered_set<TopicAndDatatype, PairHash> latestTopics;
     latestTopics.reserve(topicNamesAndTypes.size());
-    bool hasClockTopic = false;
     for (const auto& topicNameAndType : topicNamesAndTypes) {
       const auto& topicName = topicNameAndType.name;
       const auto& datatype = topicNameAndType.datatype;
-
-      // Check if a /clock topic is published
-      hasClockTopic = hasClockTopic || (topicName == "/clock" && datatype == "rosgraph_msgs/Clock");
 
       // Ignore the topic if it is not on the topic whitelist
       if (std::find_if(_topicWhitelistPatterns.begin(), _topicWhitelistPatterns.end(),
@@ -350,20 +363,6 @@ private:
       ROS_DEBUG(
         "%zu topics have been ignored as they do not match any pattern on the topic whitelist",
         numIgnoredTopics);
-    }
-
-    // Enable or disable simulated time based on the presence of a /clock topic
-    if (!_useSimTime && hasClockTopic) {
-      ROS_INFO("/clock topic found, using simulated time");
-      _useSimTime = true;
-      _clockSubscription = getMTNodeHandle().subscribe<rosgraph_msgs::Clock>(
-        "/clock", 10, [&](const rosgraph_msgs::Clock::ConstPtr msg) {
-          _simTimeNs = msg->clock.toNSec();
-        });
-    } else if (_useSimTime && !hasClockTopic) {
-      ROS_WARN("/clock topic disappeared");
-      _useSimTime = false;
-      _clockSubscription.shutdown();
     }
 
     // Create a list of topics that are new to us
@@ -475,7 +474,7 @@ private:
     const foxglove::Channel& channel, foxglove::ConnHandle clientHandle,
     const ros::MessageEvent<ros_babel_fish::BabelFishMessage const>& msgEvent) {
     const auto& msg = msgEvent.getConstMessage();
-    const auto receiptTimeNs = _useSimTime ? _simTimeNs.load() : msgEvent.getReceiptTime().toNSec();
+    const auto receiptTimeNs = msgEvent.getReceiptTime().toNSec();
     _server->sendMessage(
       clientHandle, channel.id, receiptTimeNs,
       std::string_view(reinterpret_cast<const char*>(msg->buffer()), msg->size()));
@@ -494,8 +493,7 @@ private:
   size_t _maxUpdateMs = size_t(DEFAULT_MAX_UPDATE_MS);
   size_t _updateCount = 0;
   ros::Subscriber _clockSubscription;
-  std::atomic<uint64_t> _simTimeNs = 0;
-  std::atomic<bool> _useSimTime = false;
+  bool _useSimTime = false;
 };
 
 }  // namespace foxglove_bridge
