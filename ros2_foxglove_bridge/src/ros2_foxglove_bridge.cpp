@@ -1,4 +1,3 @@
-#include <atomic>
 #include <chrono>
 #include <memory>
 #include <regex>
@@ -100,6 +99,20 @@ public:
     this->declare_parameter<std::vector<std::string>>(
       topicWhiteListDescription.name, std::vector<std::string>({".*"}), topicWhiteListDescription);
 
+    auto sendBufferLimit = rcl_interfaces::msg::ParameterDescriptor{};
+    sendBufferLimit.name = "send_buffer_limit";
+    sendBufferLimit.type = rcl_interfaces::msg::ParameterType::PARAMETER_INTEGER;
+    sendBufferLimit.description =
+      "Connection send buffer limit in bytes. Messages will be dropped when a connection's send "
+      "buffer reaches this limit to avoid a queue of outdated messages building up.";
+    sendBufferLimit.integer_range.resize(1);
+    sendBufferLimit.integer_range[0].from_value = 0;
+    sendBufferLimit.integer_range[0].to_value = std::numeric_limits<int64_t>::max();
+    sendBufferLimit.read_only = true;
+    this->declare_parameter(sendBufferLimit.name,
+                            static_cast<int64_t>(foxglove::DEFAULT_SEND_BUFFER_LIMIT_BYTES),
+                            sendBufferLimit);
+
     const auto regexPatterns =
       this->get_parameter(topicWhiteListDescription.name).as_string_array();
     _topicWhitelistPatterns.reserve(regexPatterns.size());
@@ -113,17 +126,28 @@ public:
       }
     }
 
+    const auto send_buffer_limit =
+      static_cast<size_t>(this->get_parameter("send_buffer_limit").as_int());
     const auto useTLS = this->get_parameter("tls").as_bool();
     const auto certfile = this->get_parameter("certfile").as_string();
     const auto keyfile = this->get_parameter("keyfile").as_string();
+    _useSimTime = this->get_parameter("use_sim_time").as_bool();
     const auto logHandler = std::bind(&FoxgloveBridge::logHandler, this, _1, _2);
+
+    std::vector<std::string> serverCapabilities = {
+      foxglove::CAPABILITY_CLIENT_PUBLISH,
+    };
+    if (_useSimTime) {
+      serverCapabilities.push_back(foxglove::CAPABILITY_TIME);
+    }
 
     if (useTLS) {
       _server = std::make_unique<foxglove::Server<foxglove::WebSocketTls>>(
-        "foxglove_bridge", std::move(logHandler), certfile, keyfile);
+        "foxglove_bridge", std::move(logHandler), serverCapabilities, send_buffer_limit, certfile,
+        keyfile);
     } else {
-      _server = std::make_unique<foxglove::Server<foxglove::WebSocketNoTls>>("foxglove_bridge",
-                                                                             std::move(logHandler));
+      _server = std::make_unique<foxglove::Server<foxglove::WebSocketNoTls>>(
+        "foxglove_bridge", std::move(logHandler), serverCapabilities, send_buffer_limit);
     }
     _server->setSubscribeHandler(std::bind(&FoxgloveBridge::subscribeHandler, this, _1, _2));
     _server->setUnsubscribeHandler(std::bind(&FoxgloveBridge::unsubscribeHandler, this, _1, _2));
@@ -146,14 +170,25 @@ public:
       this->set_parameter(rclcpp::Parameter{"port", listeningPort});
     }
 
-    _maxQosDepth = this->get_parameter("max_qos_depth").as_int();
+    _maxQosDepth = static_cast<size_t>(this->get_parameter("max_qos_depth").as_int());
 
     // Start the thread polling for rosgraph changes
     _rosgraphPollThread =
       std::make_unique<std::thread>(std::bind(&FoxgloveBridge::rosgraphPollThread, this));
 
+    _subscriptionCallbackGroup = this->create_callback_group(rclcpp::CallbackGroupType::Reentrant);
     _clientPublishCallbackGroup =
       this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+
+    if (_useSimTime) {
+      _clockSubscription = this->create_subscription<rosgraph_msgs::msg::Clock>(
+        "/clock", rclcpp::QoS{rclcpp::KeepLast(1)}.best_effort(),
+        [&](std::shared_ptr<rosgraph_msgs::msg::Clock> msg) {
+          const auto timestamp = rclcpp::Time{msg->clock}.nanoseconds();
+          assert(timestamp >= 0 && "Timestamp is negative");
+          _server->broadcastTime(static_cast<uint64_t>(timestamp));
+        });
+    }
   }
 
   ~FoxgloveBridge() {
@@ -192,15 +227,9 @@ public:
     auto topicNamesAndTypes = this->get_node_graph_interface()->get_topic_names_and_types();
     std::unordered_set<TopicAndDatatype, PairHash> latestTopics;
     latestTopics.reserve(topicNamesAndTypes.size());
-    bool hasClockTopic = false;
     for (const auto& topicNamesAndType : topicNamesAndTypes) {
       const auto& topicName = topicNamesAndType.first;
       const auto& datatypes = topicNamesAndType.second;
-
-      // Check if a /clock topic is published
-      hasClockTopic = hasClockTopic || (topicName == "/clock" &&
-                                        std::find(datatypes.begin(), datatypes.end(),
-                                                  "rosgraph_msgs/msg/Clock") != datatypes.end());
 
       // Ignore the topic if it is not on the topic whitelist
       if (std::find_if(_topicWhitelistPatterns.begin(), _topicWhitelistPatterns.end(),
@@ -218,21 +247,6 @@ public:
         this->get_logger(),
         "%zu topics have been ignored as they do not match any pattern on the topic whitelist",
         numIgnoredTopics);
-    }
-
-    // Enable or disable simulated time based on the presence of a /clock topic
-    if (!_useSimTime && hasClockTopic) {
-      RCLCPP_INFO(this->get_logger(), "/clock topic found, using simulated time");
-      _useSimTime = true;
-      _clockSubscription = this->create_subscription<rosgraph_msgs::msg::Clock>(
-        "/clock", rclcpp::QoS{rclcpp::KeepLast(1)}.best_effort(),
-        [&](std::shared_ptr<rosgraph_msgs::msg::Clock> msg) {
-          _simTimeNs = uint64_t(rclcpp::Time{msg->clock}.nanoseconds());
-        });
-    } else if (_useSimTime && !hasClockTopic) {
-      RCLCPP_WARN(this->get_logger(), "/clock topic disappeared");
-      _useSimTime = false;
-      _clockSubscription.reset();
     }
 
     // Create a list of topics that are new to us
@@ -335,16 +349,15 @@ private:
   std::unordered_map<TopicAndDatatype, foxglove::Channel, PairHash> _advertisedTopics;
   std::unordered_map<foxglove::ChannelId, TopicAndDatatype> _channelToTopicAndDatatype;
   std::unordered_map<foxglove::ChannelId, SubscriptionsByClient> _subscriptions;
-  std::unordered_map<foxglove::ChannelId, rclcpp::CallbackGroup::SharedPtr> _channelCallbackGroups;
   PublicationsByClient _clientAdvertisedTopics;
+  rclcpp::CallbackGroup::SharedPtr _subscriptionCallbackGroup;
   rclcpp::CallbackGroup::SharedPtr _clientPublishCallbackGroup;
   std::mutex _subscriptionsMutex;
   std::mutex _clientAdvertisementsMutex;
   std::unique_ptr<std::thread> _rosgraphPollThread;
   size_t _maxQosDepth = DEFAULT_MAX_QOS_DEPTH;
   std::shared_ptr<rclcpp::Subscription<rosgraph_msgs::msg::Clock>> _clockSubscription;
-  std::atomic<uint64_t> _simTimeNs = 0;
-  std::atomic<bool> _useSimTime = false;
+  bool _useSimTime = false;
 
   void subscribeHandler(foxglove::ChannelId channelId, foxglove::ConnHandle clientHandle) {
     std::lock_guard<std::mutex> lock(_subscriptionsMutex);
@@ -382,13 +395,9 @@ private:
                    topic.c_str(), datatype.c_str());
     };
 
-    const auto& [callbackGroup, isNewlyInserted] = _channelCallbackGroups.insert(
-      {channelId, this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive)});
-    (void)isNewlyInserted;
-
     rclcpp::SubscriptionOptions subscriptionOptions;
     subscriptionOptions.event_callbacks = eventCallbacks;
-    subscriptionOptions.callback_group = callbackGroup->second;
+    subscriptionOptions.callback_group = _subscriptionCallbackGroup;
 
     // Select an appropriate subscription QOS profile. This is similar to how ros2 topic echo
     // does it:
@@ -638,15 +647,12 @@ private:
                          std::shared_ptr<rclcpp::SerializedMessage> msg) {
     // NOTE: Do not call any RCLCPP_* logging functions from this function. Otherwise, subscribing
     // to `/rosout` will cause a feedback loop
-    const auto timestamp = currentTimeNs();
+    const auto timestamp = this->now().nanoseconds();
+    assert(timestamp >= 0 && "Timestamp is negative");
     const auto payload =
       std::string_view{reinterpret_cast<const char*>(msg->get_rcl_serialized_message().buffer),
                        msg->get_rcl_serialized_message().buffer_length};
-    _server->sendMessage(clientHandle, channel.id, timestamp, payload);
-  }
-
-  uint64_t currentTimeNs() {
-    return _useSimTime ? _simTimeNs.load() : uint64_t(this->now().nanoseconds());
+    _server->sendMessage(clientHandle, channel.id, static_cast<uint64_t>(timestamp), payload);
   }
 };
 
