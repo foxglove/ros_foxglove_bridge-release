@@ -9,7 +9,7 @@ if(POLICY CMP0024)
   set(CMAKE_POLICY_DEFAULT_CMP0024 NEW)
 endif()
 
-project(foxglove_bridge LANGUAGES CXX VERSION 0.2.2)
+project(foxglove_bridge LANGUAGES CXX VERSION 0.3.0)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -202,6 +202,9 @@ if(ROS_BUILD_TYPE STREQUAL "catkin")
     install(FILES nodelets.xml
       DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
     )
+    install(DIRECTORY ros1_foxglove_bridge/launch/
+      DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/launch
+    )
 elseif(ROS_BUILD_TYPE STREQUAL "ament_cmake")
     install(TARGETS foxglove_bridge
       DESTINATION lib/${PROJECT_NAME}
@@ -210,6 +213,9 @@ elseif(ROS_BUILD_TYPE STREQUAL "ament_cmake")
       ARCHIVE DESTINATION lib
       LIBRARY DESTINATION lib
       RUNTIME DESTINATION bin
+    )
+    install(DIRECTORY ros2_foxglove_bridge/launch/
+      DESTINATION share/${PROJECT_NAME}/
     )
     ament_export_libraries(foxglove_bridge_base foxglove_bridge_component)
     ament_package()
