@@ -29,12 +29,15 @@ using ConnHandle = websocketpp::connection_hdl;
 using OpCode = websocketpp::frame::opcode::value;
 
 static const websocketpp::log::level APP = websocketpp::log::alevel::app;
+static const websocketpp::log::level WARNING = websocketpp::log::elevel::warn;
 static const websocketpp::log::level RECOVERABLE = websocketpp::log::elevel::rerror;
+
+constexpr size_t DEFAULT_SEND_BUFFER_LIMIT_BYTES = 10000000UL;  // 10 MB
 
 constexpr uint32_t Integer(const std::string_view str) {
   uint32_t result = 0x811C9DC5;  // FNV-1a 32-bit algorithm
   for (char c : str) {
-    result = (c ^ result) * 0x01000193;
+    result = (static_cast<uint32_t>(c) ^ result) * 0x01000193;
   }
   return result;
 }
@@ -127,6 +130,7 @@ class ServerInterface {
   using ClientMessageHandler = std::function<void(const ClientMessage&, ConnHandle)>;
 
 public:
+  virtual ~ServerInterface() {}
   virtual void start(const std::string& host, uint16_t port) = 0;
   virtual void stop() = 0;
 
@@ -142,6 +146,7 @@ public:
 
   virtual void sendMessage(ConnHandle clientHandle, ChannelId chanId, uint64_t timestamp,
                            std::string_view data) = 0;
+  virtual void broadcastTime(uint64_t timestamp) = 0;
 
   virtual std::optional<Tcp::endpoint> localEndpoint() = 0;
   virtual std::string remoteEndpointString(ConnHandle clientHandle) = 0;
@@ -164,8 +169,10 @@ public:
 
   static bool USES_TLS;
 
-  explicit Server(std::string name, LogCallback logger, const std::string& certfile = "",
-                  const std::string& keyfile = "");
+  explicit Server(std::string name, LogCallback logger,
+                  const std::vector<std::string>& capabilities,
+                  size_t send_buffer_limit_bytes = DEFAULT_SEND_BUFFER_LIMIT_BYTES,
+                  const std::string& certfile = "", const std::string& keyfile = "");
   virtual ~Server();
 
   Server(const Server&) = delete;
@@ -188,6 +195,7 @@ public:
 
   void sendMessage(ConnHandle clientHandle, ChannelId chanId, uint64_t timestamp,
                    std::string_view data) override;
+  void broadcastTime(uint64_t timestamp) override;
 
   std::optional<Tcp::endpoint> localEndpoint() override;
   std::string remoteEndpointString(ConnHandle clientHandle) override;
@@ -208,6 +216,8 @@ private:
 
   std::string _name;
   LogCallback _logger;
+  std::vector<std::string> _capabilities;
+  size_t _send_buffer_limit_bytes;
   std::string _certfile;
   std::string _keyfile;
   ServerType _server;
@@ -242,9 +252,13 @@ private:
 
 template <typename ServerConfiguration>
 inline Server<ServerConfiguration>::Server(std::string name, LogCallback logger,
+                                           const std::vector<std::string>& capabilities,
+                                           size_t send_buffer_limit_bytes,
                                            const std::string& certfile, const std::string& keyfile)
     : _name(std::move(name))
     , _logger(logger)
+    , _capabilities(capabilities)
+    , _send_buffer_limit_bytes(send_buffer_limit_bytes)
     , _certfile(certfile)
     , _keyfile(keyfile) {
   // Redirect logging
@@ -310,7 +324,7 @@ inline void Server<ServerConfiguration>::handleConnectionOpened(ConnHandle hdl) 
   con->send(json({
                    {"op", "serverInfo"},
                    {"name", _name},
-                   {"capabilities", json::array({"clientPublish"})},
+                   {"capabilities", _capabilities},
                  })
               .dump());
 
@@ -694,9 +708,9 @@ inline void Server<ServerConfiguration>::handleTextMessage(ConnHandle hdl, const
 template <typename ServerConfiguration>
 inline void Server<ServerConfiguration>::handleBinaryMessage(ConnHandle hdl, const uint8_t* msg,
                                                              size_t length) {
-  const uint64_t timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                               std::chrono::high_resolution_clock::now().time_since_epoch())
-                               .count();
+  const auto timestamp = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                           std::chrono::high_resolution_clock::now().time_since_epoch())
+                           .count();
 
   if (length < 1) {
     sendStatus(hdl, StatusLevel::Error, "Received an empty binary message");
@@ -731,8 +745,12 @@ inline void Server<ServerConfiguration>::handleBinaryMessage(ConnHandle hdl, con
       if (_clientMessageHandler) {
         const auto& advertisement = channelIt->second;
         const uint32_t sequence = 0;
-        const ClientMessage clientMessage{timestamp,     timestamp, sequence,
-                                          advertisement, length,    msg};
+        const ClientMessage clientMessage{static_cast<uint64_t>(timestamp),
+                                          static_cast<uint64_t>(timestamp),
+                                          sequence,
+                                          advertisement,
+                                          length,
+                                          msg};
         _clientMessageHandler(clientMessage, hdl);
       }
     } break;
@@ -789,6 +807,17 @@ inline void Server<ServerConfiguration>::broadcastChannels() {
 template <typename ServerConfiguration>
 inline void Server<ServerConfiguration>::sendMessage(ConnHandle clientHandle, ChannelId chanId,
                                                      uint64_t timestamp, std::string_view data) {
+  std::error_code ec;
+  const auto con = _server.get_con_from_hdl(clientHandle, ec);
+  if (ec || !con) {
+    return;
+  }
+
+  const auto bufferSizeinBytes = con->get_buffered_amount();
+  if (bufferSizeinBytes >= _send_buffer_limit_bytes) {
+    return;
+  }
+
   SubscriptionId subId = std::numeric_limits<SubscriptionId>::max();
 
   {
@@ -812,6 +841,19 @@ inline void Server<ServerConfiguration>::sendMessage(ConnHandle clientHandle, Ch
   foxglove::WriteUint64LE(message.data() + 5, timestamp);
   std::memcpy(message.data() + 1 + 4 + 8, data.data(), data.size());
   sendBinary(clientHandle, message);
+}
+
+template <typename ServerConfiguration>
+inline void Server<ServerConfiguration>::broadcastTime(uint64_t timestamp) {
+  std::vector<uint8_t> message(1 + 8);
+  message[0] = uint8_t(BinaryOpcode::TIME_DATA);
+  foxglove::WriteUint64LE(message.data() + 1, timestamp);
+
+  std::shared_lock<std::shared_mutex> lock(_clientsChannelMutex);
+  for (const auto& [hdl, clientInfo] : _clients) {
+    (void)clientInfo;
+    sendBinary(hdl, message);
+  }
 }
 
 template <typename ServerConfiguration>
