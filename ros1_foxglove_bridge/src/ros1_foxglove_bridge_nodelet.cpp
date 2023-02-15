@@ -12,11 +12,15 @@
 #include <pluginlib/class_list_macros.h>
 #include <ros/message_event.h>
 #include <ros/ros.h>
+#include <ros/xmlrpc_manager.h>
 #include <ros_babel_fish/babel_fish_message.h>
 #include <ros_babel_fish/generation/providers/integrated_description_provider.h>
 #include <rosgraph_msgs/Clock.h>
 
 #include <foxglove_bridge/foxglove_bridge.hpp>
+#include <foxglove_bridge/generic_service.hpp>
+#include <foxglove_bridge/param_utils.hpp>
+#include <foxglove_bridge/service_utils.hpp>
 #include <foxglove_bridge/websocket_server.hpp>
 
 namespace foxglove_bridge {
@@ -28,6 +32,7 @@ constexpr char ROS1_CHANNEL_ENCODING[] = "ros1";
 constexpr uint32_t SUBSCRIPTION_QUEUE_LENGTH = 10;
 constexpr double MIN_UPDATE_PERIOD_MS = 100.0;
 constexpr uint32_t PUBLICATION_QUEUE_LENGTH = 10;
+constexpr int SERVICE_TYPE_RETRIEVAL_TIMEOUT_MS = 250;
 
 using TopicAndDatatype = std::pair<std::string, std::string>;
 using SubscriptionsByClient = std::map<foxglove::ConnHandle, ros::Subscriber, std::owner_less<>>;
@@ -47,39 +52,58 @@ public:
     const auto certfile = nhp.param<std::string>("certfile", "");
     const auto keyfile = nhp.param<std::string>("keyfile", "");
     _maxUpdateMs = static_cast<size_t>(nhp.param<int>("max_update_ms", DEFAULT_MAX_UPDATE_MS));
+    const auto useCompression = nhp.param<bool>("use_compression", false);
     _useSimTime = nhp.param<bool>("/use_sim_time", false);
+    const auto sessionId = nhp.param<std::string>("/run_id", std::to_string(std::time(nullptr)));
 
-    const auto regexPatterns = nhp.param<std::vector<std::string>>("topic_whitelist", {".*"});
-    _topicWhitelistPatterns.reserve(regexPatterns.size());
-    for (const auto& pattern : regexPatterns) {
-      try {
-        _topicWhitelistPatterns.push_back(
-          std::regex(pattern, std::regex_constants::ECMAScript | std::regex_constants::icase));
-      } catch (const std::exception& ex) {
-        ROS_ERROR("Ignoring invalid regular expression '%s': %s", pattern.c_str(), ex.what());
-      }
+    const auto topicWhitelistPatterns =
+      nhp.param<std::vector<std::string>>("topic_whitelist", {".*"});
+    _topicWhitelistPatterns = parseRegexPatterns(topicWhitelistPatterns);
+    if (topicWhitelistPatterns.size() != _topicWhitelistPatterns.size()) {
+      ROS_ERROR("Failed to parse one or more topic whitelist patterns");
+    }
+    const auto paramWhitelist = nhp.param<std::vector<std::string>>("param_whitelist", {".*"});
+    _paramWhitelistPatterns = parseRegexPatterns(paramWhitelist);
+    if (paramWhitelist.size() != _paramWhitelistPatterns.size()) {
+      ROS_ERROR("Failed to parse one or more param whitelist patterns");
+    }
+
+    const auto serviceWhitelist = nhp.param<std::vector<std::string>>("service_whitelist", {".*"});
+    _serviceWhitelistPatterns = parseRegexPatterns(serviceWhitelist);
+    if (serviceWhitelist.size() != _serviceWhitelistPatterns.size()) {
+      ROS_ERROR("Failed to parse one or more service whitelist patterns");
     }
 
     ROS_INFO("Starting %s with %s", ros::this_node::getName().c_str(),
              foxglove::WebSocketUserAgent());
 
     try {
-      std::vector<std::string> serverCapabilities = {
+      foxglove::ServerOptions serverOptions;
+      serverOptions.capabilities = {
         foxglove::CAPABILITY_CLIENT_PUBLISH,
+        foxglove::CAPABILITY_PARAMETERS,
+        foxglove::CAPABILITY_PARAMETERS_SUBSCRIBE,
+        foxglove::CAPABILITY_SERVICES,
       };
       if (_useSimTime) {
-        serverCapabilities.push_back(foxglove::CAPABILITY_TIME);
+        serverOptions.capabilities.push_back(foxglove::CAPABILITY_TIME);
       }
+      serverOptions.supportedEncodings = {ROS1_CHANNEL_ENCODING};
+      serverOptions.metadata = {{"ROS_DISTRO", std::getenv("ROS_DISTRO")}};
+      serverOptions.sendBufferLimitBytes = send_buffer_limit;
+      serverOptions.sessionId = sessionId;
+      serverOptions.useCompression = useCompression;
 
       const auto logHandler =
         std::bind(&FoxgloveBridge::logHandler, this, std::placeholders::_1, std::placeholders::_2);
       if (useTLS) {
+        serverOptions.certfile = certfile;
+        serverOptions.keyfile = keyfile;
         _server = std::make_unique<foxglove::Server<foxglove::WebSocketTls>>(
-          "foxglove_bridge", std::move(logHandler), serverCapabilities, send_buffer_limit, certfile,
-          keyfile);
+          "foxglove_bridge", std::move(logHandler), serverOptions);
       } else {
         _server = std::make_unique<foxglove::Server<foxglove::WebSocketNoTls>>(
-          "foxglove_bridge", std::move(logHandler), serverCapabilities, send_buffer_limit);
+          "foxglove_bridge", std::move(logHandler), serverOptions);
       }
 
       _server->setSubscribeHandler(std::bind(&FoxgloveBridge::subscribeHandler, this,
@@ -93,9 +117,25 @@ public:
                                                      std::placeholders::_2));
       _server->setClientMessageHandler(std::bind(&FoxgloveBridge::clientMessageHandler, this,
                                                  std::placeholders::_1, std::placeholders::_2));
+      _server->setParameterRequestHandler(std::bind(&FoxgloveBridge::parameterRequestHandler, this,
+                                                    std::placeholders::_1, std::placeholders::_2,
+                                                    std::placeholders::_3));
+      _server->setParameterChangeHandler(std::bind(&FoxgloveBridge::parameterChangeHandler, this,
+                                                   std::placeholders::_1, std::placeholders::_2,
+                                                   std::placeholders::_3));
+      _server->setParameterSubscriptionHandler(
+        std::bind(&FoxgloveBridge::parameterSubscriptionHandler, this, std::placeholders::_1,
+                  std::placeholders::_2, std::placeholders::_3));
+      _server->setServiceRequestHandler(std::bind(&FoxgloveBridge::serviceRequestHandler, this,
+                                                  std::placeholders::_1, std::placeholders::_2));
+
       _server->start(address, static_cast<uint16_t>(port));
 
-      updateAdvertisedTopics(ros::TimerEvent());
+      xmlrpcServer.bind("paramUpdate", std::bind(&FoxgloveBridge::parameterUpdates, this,
+                                                 std::placeholders::_1, std::placeholders::_2));
+      xmlrpcServer.start();
+
+      updateAdvertisedTopicsAndServices(ros::TimerEvent());
 
       if (_useSimTime) {
         _clockSubscription = getMTNodeHandle().subscribe<rosgraph_msgs::Clock>(
@@ -110,6 +150,7 @@ public:
     }
   };
   virtual ~FoxgloveBridge() {
+    xmlrpcServer.shutdown();
     if (_server) {
       _server->stop();
     }
@@ -331,12 +372,25 @@ private:
     channelPublicationIt->second.publish(msg);
   }
 
-  void updateAdvertisedTopics(const ros::TimerEvent&) {
+  void updateAdvertisedTopicsAndServices(const ros::TimerEvent&) {
     _updateTimer.stop();
     if (!ros::ok()) {
       return;
     }
 
+    updateAdvertisedTopics();
+    updateAdvertisedServices();
+
+    // Schedule the next update using truncated exponential backoff, between `MIN_UPDATE_PERIOD_MS`
+    // and `_maxUpdateMs`
+    _updateCount++;
+    const auto nextUpdateMs = std::max(
+      MIN_UPDATE_PERIOD_MS, static_cast<double>(std::min(size_t(1) << _updateCount, _maxUpdateMs)));
+    _updateTimer = getMTNodeHandle().createTimer(
+      ros::Duration(nextUpdateMs / 1e3), &FoxgloveBridge::updateAdvertisedTopicsAndServices, this);
+  }
+
+  void updateAdvertisedTopics() {
     // Get the current list of visible topics and datatypes from the ROS graph
     std::vector<ros::master::TopicInfo> topicNamesAndTypes;
     if (!ros::master::getTopics(topicNamesAndTypes)) {
@@ -351,10 +405,7 @@ private:
       const auto& datatype = topicNameAndType.datatype;
 
       // Ignore the topic if it is not on the topic whitelist
-      if (std::find_if(_topicWhitelistPatterns.begin(), _topicWhitelistPatterns.end(),
-                       [&topicName](const auto& regex) {
-                         return std::regex_match(topicName, regex);
-                       }) != _topicWhitelistPatterns.end()) {
+      if (isWhitelisted(topicName, _topicWhitelistPatterns)) {
         latestTopics.emplace(topicName, datatype);
       }
     }
@@ -440,14 +491,205 @@ private:
     if (newTopics.size() > 0) {
       _server->broadcastChannels();
     }
+  }
 
-    // Schedule the next update using truncated exponential backoff, between `MIN_UPDATE_PERIOD_MS`
-    // and `_maxUpdateMs`
-    _updateCount++;
-    const auto nextUpdateMs = std::max(
-      MIN_UPDATE_PERIOD_MS, static_cast<double>(std::min(size_t(1) << _updateCount, _maxUpdateMs)));
-    _updateTimer = getMTNodeHandle().createTimer(ros::Duration(nextUpdateMs / 1e3),
-                                                 &FoxgloveBridge::updateAdvertisedTopics, this);
+  void updateAdvertisedServices() {
+    std::vector<std::string> serviceNames;
+    XmlRpc::XmlRpcValue params, result, payload;
+    params[0] = this->getName();
+    if (ros::master::execute("getSystemState", params, result, payload, false) &&
+        static_cast<int>(result[0]) == 1) {
+      const auto& systemState = result[2];
+      const auto& services = systemState[2];
+      for (int i = 0; i < services.size(); ++i) {
+        const std::string serviceName = services[i][0];
+        serviceNames.emplace_back(serviceName);
+      }
+    } else {
+      ROS_WARN("Failed to call getSystemState: %s", result.toXml().c_str());
+      return;
+    }
+
+    std::unique_lock<std::shared_mutex> lock(_servicesMutex);
+
+    // Remove advertisements for services that have been removed
+    std::vector<foxglove::ServiceId> servicesToRemove;
+    for (const auto& service : _advertisedServices) {
+      const auto it =
+        std::find_if(serviceNames.begin(), serviceNames.end(), [service](const auto& serviceName) {
+          return serviceName == service.second.name;
+        });
+      if (it == serviceNames.end()) {
+        servicesToRemove.push_back(service.first);
+      }
+    }
+    for (auto serviceId : servicesToRemove) {
+      _advertisedServices.erase(serviceId);
+    }
+    _server->removeServices(servicesToRemove);
+
+    // Advertise new services
+    std::vector<foxglove::ServiceWithoutId> newServices;
+    for (const auto& serviceName : serviceNames) {
+      if (std::find_if(_advertisedServices.begin(), _advertisedServices.end(),
+                       [&serviceName](const auto& idWithService) {
+                         return idWithService.second.name == serviceName;
+                       }) != _advertisedServices.end()) {
+        continue;  // Already advertised
+      }
+
+      auto serviceTypeFuture = retrieveServiceType(serviceName);
+      if (serviceTypeFuture.wait_for(std::chrono::milliseconds(
+            SERVICE_TYPE_RETRIEVAL_TIMEOUT_MS)) != std::future_status::ready) {
+        ROS_WARN("Failed to retrieve type of service %s", serviceName.c_str());
+        continue;
+      }
+
+      const auto serviceType = serviceTypeFuture.get();
+      const auto srvDescription = _rosTypeInfoProvider.getServiceDescription(serviceType);
+
+      foxglove::ServiceWithoutId service;
+      service.name = serviceName;
+      service.type = serviceType;
+
+      if (srvDescription) {
+        service.requestSchema = srvDescription->request->message_definition;
+        service.responseSchema = srvDescription->response->message_definition;
+      } else {
+        ROS_ERROR("Failed to retrieve type information for service '%s' of type '%s'",
+                  serviceName.c_str(), serviceType.c_str());
+
+        // We still advertise the channel, but with empty schema.
+        service.requestSchema = "";
+        service.responseSchema = "";
+      }
+      newServices.push_back(service);
+    }
+
+    const auto serviceIds = _server->addServices(newServices);
+    for (size_t i = 0; i < serviceIds.size(); ++i) {
+      _advertisedServices.emplace(serviceIds[i], newServices[i]);
+    }
+  }
+
+  void parameterRequestHandler(const std::vector<std::string>& parameters,
+                               const std::optional<std::string>& requestId,
+                               foxglove::ConnHandle hdl) {
+    std::vector<std::string> parameterNames = parameters;
+    if (parameterNames.empty()) {
+      getMTNodeHandle().getParamNames(parameterNames);
+    }
+
+    std::vector<foxglove::Parameter> params;
+    for (const auto& paramName : parameterNames) {
+      if (!isWhitelisted(paramName, _paramWhitelistPatterns)) {
+        ROS_WARN("Parameter '%s' is not whitelisted", paramName.c_str());
+        continue;
+      }
+
+      try {
+        XmlRpc::XmlRpcValue value;
+        getMTNodeHandle().getParam(paramName, value);
+        params.push_back(fromRosParam(paramName, value));
+      } catch (const std::exception& ex) {
+        ROS_ERROR("Invalid parameter: %s", ex.what());
+      }
+    }
+
+    _server->publishParameterValues(hdl, params, requestId);
+  }
+
+  void parameterChangeHandler(const std::vector<foxglove::Parameter>& parameters,
+                              const std::optional<std::string>& requestId,
+                              foxglove::ConnHandle hdl) {
+    using foxglove::ParameterType;
+    auto nh = this->getMTNodeHandle();
+    for (const auto& param : parameters) {
+      const auto paramName = param.getName();
+      if (!isWhitelisted(paramName, _paramWhitelistPatterns)) {
+        ROS_WARN("Parameter '%s' is not whitelisted", paramName.c_str());
+        continue;
+      }
+
+      const auto paramType = param.getType();
+      if (paramType == ParameterType::PARAMETER_BOOL) {
+        nh.setParam(paramName, param.getValue<bool>());
+      } else if (paramType == ParameterType::PARAMETER_INTEGER) {
+        nh.setParam(paramName, static_cast<int>(param.getValue<int64_t>()));
+      } else if (paramType == ParameterType::PARAMETER_DOUBLE) {
+        nh.setParam(paramName, param.getValue<double>());
+      } else if (paramType == ParameterType::PARAMETER_STRING) {
+        nh.setParam(paramName, param.getValue<std::string>());
+      } else if (paramType == ParameterType::PARAMETER_BOOL_ARRAY) {
+        nh.setParam(paramName, param.getValue<std::vector<bool>>());
+      } else if (paramType == ParameterType::PARAMETER_INTEGER_ARRAY) {
+        const auto int64Vec = param.getValue<std::vector<int64_t>>();
+        std::vector<int> intVec(int64Vec.begin(), int64Vec.end());
+        nh.setParam(paramName, intVec);
+      } else if (paramType == ParameterType::PARAMETER_DOUBLE_ARRAY) {
+        nh.setParam(paramName, param.getValue<std::vector<double>>());
+      } else if (paramType == ParameterType::PARAMETER_STRING_ARRAY) {
+        nh.setParam(paramName, param.getValue<std::vector<std::string>>());
+      } else if (paramType == ParameterType::PARAMETER_NOT_SET) {
+        nh.deleteParam(paramName);
+      }
+    }
+
+    // If a request Id was given, send potentially updated parameters back to client
+    if (requestId) {
+      std::vector<std::string> parameterNames(parameters.size());
+      for (size_t i = 0; i < parameters.size(); ++i) {
+        parameterNames[i] = parameters[i].getName();
+      }
+      parameterRequestHandler(parameterNames, requestId, hdl);
+    }
+  }
+
+  void parameterSubscriptionHandler(const std::vector<std::string>& parameters,
+                                    foxglove::ParameterSubscriptionOperation op,
+                                    foxglove::ConnHandle) {
+    for (const auto& paramName : parameters) {
+      if (!isWhitelisted(paramName, _paramWhitelistPatterns)) {
+        ROS_WARN("Parameter '%s' is not whitelisted", paramName.c_str());
+        continue;
+      }
+
+      XmlRpc::XmlRpcValue params, result, payload;
+      params[0] = getName() + "2";
+      params[1] = xmlrpcServer.getServerURI();
+      params[2] = ros::names::resolve(paramName);
+
+      const auto opVerb = (op == foxglove::ParameterSubscriptionOperation::SUBSCRIBE)
+                            ? "subscribeParam"
+                            : "unsubscribeParam";
+
+      if (ros::master::execute(opVerb, params, result, payload, false)) {
+        ROS_DEBUG("%s '%s'", opVerb, paramName.c_str());
+      } else {
+        ROS_WARN("Failed to %s '%s': %s", opVerb, paramName.c_str(), result.toXml().c_str());
+      }
+    }
+  }
+
+  void parameterUpdates(XmlRpc::XmlRpcValue& params, XmlRpc::XmlRpcValue& result) {
+    result[0] = 1;
+    result[1] = std::string("");
+    result[2] = 0;
+
+    if (params.size() != 3) {
+      ROS_ERROR("Parameter update called with invalid parameter size: %d", params.size());
+      return;
+    }
+
+    const std::string paramName = ros::names::clean(params[1]);
+    const XmlRpc::XmlRpcValue paramValue = params[2];
+    try {
+      const auto param = fromRosParam(paramName, paramValue);
+      _server->updateParameterValues({param});
+    } catch (const std::exception& ex) {
+      ROS_ERROR("Failed to convert parameter: %s", ex.what());
+      return;
+    }
   }
 
   void logHandler(foxglove::WebSocketLogLevel level, char const* msg) {
@@ -475,20 +717,65 @@ private:
     const ros::MessageEvent<ros_babel_fish::BabelFishMessage const>& msgEvent) {
     const auto& msg = msgEvent.getConstMessage();
     const auto receiptTimeNs = msgEvent.getReceiptTime().toNSec();
-    _server->sendMessage(
-      clientHandle, channel.id, receiptTimeNs,
-      std::string_view(reinterpret_cast<const char*>(msg->buffer()), msg->size()));
+    _server->sendMessage(clientHandle, channel.id, receiptTimeNs, msg->buffer(), msg->size());
+  }
+
+  void serviceRequestHandler(const foxglove::ServiceRequest& request,
+                             foxglove::ConnHandle clientHandle) {
+    std::shared_lock<std::shared_mutex> lock(_servicesMutex);
+    const auto serviceIt = _advertisedServices.find(request.serviceId);
+    if (serviceIt == _advertisedServices.end()) {
+      ROS_ERROR("Service with id %d does not exist", request.serviceId);
+      return;
+    }
+    const auto& serviceName = serviceIt->second.name;
+    const auto& serviceType = serviceIt->second.type;
+    ROS_DEBUG("Received a service request for service %s (%s)", serviceName.c_str(),
+              serviceType.c_str());
+
+    if (!ros::service::exists(serviceName, false)) {
+      ROS_ERROR("Service '%s' does not exist", serviceName.c_str());
+      return;
+    }
+
+    const auto srvDescription = _rosTypeInfoProvider.getServiceDescription(serviceType);
+    if (!srvDescription) {
+      ROS_ERROR("Failed to retrieve type information for service %s (%s)", serviceName.c_str(),
+                serviceType.c_str());
+      return;
+    }
+
+    GenericService genReq, genRes;
+    genReq.type = genRes.type = serviceType;
+    genReq.md5sum = genRes.md5sum = srvDescription->md5;
+    genReq.data = request.data;
+
+    if (ros::service::call(serviceName, genReq, genRes)) {
+      foxglove::ServiceResponse res;
+      res.serviceId = request.serviceId;
+      res.callId = request.callId;
+      res.encoding = request.encoding;
+      res.data = genRes.data;
+      _server->sendServiceResponse(clientHandle, res);
+    } else {
+      ROS_ERROR("Failed to call service %s (%s)", serviceName.c_str(), serviceType.c_str());
+    }
   }
 
   std::unique_ptr<foxglove::ServerInterface> _server;
   ros_babel_fish::IntegratedDescriptionProvider _rosTypeInfoProvider;
   std::vector<std::regex> _topicWhitelistPatterns;
+  std::vector<std::regex> _paramWhitelistPatterns;
+  std::vector<std::regex> _serviceWhitelistPatterns;
+  ros::XMLRPCManager xmlrpcServer;
   std::unordered_map<TopicAndDatatype, foxglove::Channel, PairHash> _advertisedTopics;
   std::unordered_map<foxglove::ChannelId, TopicAndDatatype> _channelToTopicAndDatatype;
   std::unordered_map<foxglove::ChannelId, SubscriptionsByClient> _subscriptions;
+  std::unordered_map<foxglove::ServiceId, foxglove::ServiceWithoutId> _advertisedServices;
   PublicationsByClient _clientAdvertisedTopics;
   std::mutex _subscriptionsMutex;
   std::shared_mutex _publicationsMutex;
+  std::shared_mutex _servicesMutex;
   ros::Timer _updateTimer;
   size_t _maxUpdateMs = size_t(DEFAULT_MAX_UPDATE_MS);
   size_t _updateCount = 0;

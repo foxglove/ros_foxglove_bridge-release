@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <package format="3">
     <name>foxglove_bridge</name>
-    <version>0.3.0</version>
+    <version>0.4.0</version>
     <description>ROS Foxglove Bridge</description>
     <license>MIT</license>
     <url type="website">https://github.com/foxglove/ros-foxglove-bridge</url>
@@ -30,6 +30,7 @@
     <test_depend condition="$ROS_VERSION == 2">ament_cmake_gtest</test_depend>
     <test_depend condition="$ROS_VERSION == 2">ament_lint_auto</test_depend>
     <test_depend>std_msgs</test_depend>
+    <test_depend>std_srvs</test_depend>
 
     <!-- Common dependencies -->
     <build_depend>asio</build_depend>
@@ -37,8 +38,10 @@
     <build_depend>libwebsocketpp-dev</build_depend>
     <build_depend>nlohmann-json-dev</build_depend>
     <build_depend>ros_environment</build_depend>
+    <build_depend>zlib</build_depend>
 
     <exec_depend>openssl</exec_depend>
+    <exec_depend>zlib</exec_depend>
 
     <depend>rosgraph_msgs</depend>
 
