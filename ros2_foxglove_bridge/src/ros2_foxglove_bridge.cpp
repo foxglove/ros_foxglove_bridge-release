@@ -10,12 +10,11 @@
 #define ASIO_STANDALONE
 
 #include <foxglove_bridge/foxglove_bridge.hpp>
+#include <foxglove_bridge/generic_client.hpp>
 #include <foxglove_bridge/message_definition_cache.hpp>
+#include <foxglove_bridge/param_utils.hpp>
+#include <foxglove_bridge/parameter_interface.hpp>
 #include <foxglove_bridge/websocket_server.hpp>
-
-constexpr uint16_t DEFAULT_PORT = 8765;
-constexpr char DEFAULT_ADDRESS[] = "0.0.0.0";
-constexpr size_t DEFAULT_MAX_QOS_DEPTH = 10;
 
 using namespace std::chrono_literals;
 using namespace std::placeholders;
@@ -37,117 +36,52 @@ public:
     RCLCPP_INFO(this->get_logger(), "Starting %s with %s", this->get_name(),
                 foxglove::WebSocketUserAgent());
 
-    auto portDescription = rcl_interfaces::msg::ParameterDescriptor{};
-    portDescription.name = "port";
-    portDescription.type = rcl_interfaces::msg::ParameterType::PARAMETER_INTEGER;
-    portDescription.description = "The TCP port to bind the WebSocket server to";
-    portDescription.read_only = true;
-    portDescription.additional_constraints =
-      "Must be a valid TCP port number, or 0 to use a random port";
-    portDescription.integer_range.resize(1);
-    portDescription.integer_range[0].from_value = 0;
-    portDescription.integer_range[0].to_value = 65535;
-    portDescription.integer_range[0].step = 1;
-    this->declare_parameter("port", DEFAULT_PORT, portDescription);
+    declareParameters(this);
 
-    auto addressDescription = rcl_interfaces::msg::ParameterDescriptor{};
-    addressDescription.name = "address";
-    addressDescription.type = rcl_interfaces::msg::ParameterType::PARAMETER_STRING;
-    addressDescription.description = "The host address to bind the WebSocket server to";
-    addressDescription.read_only = true;
-    this->declare_parameter("address", DEFAULT_ADDRESS, addressDescription);
-
-    auto useTlsDescription = rcl_interfaces::msg::ParameterDescriptor{};
-    useTlsDescription.name = "tls";
-    useTlsDescription.type = rcl_interfaces::msg::ParameterType::PARAMETER_BOOL;
-    useTlsDescription.description = "Use Transport Layer Security for encrypted communication";
-    useTlsDescription.read_only = true;
-    this->declare_parameter("tls", false, useTlsDescription);
-
-    auto certfileDescription = rcl_interfaces::msg::ParameterDescriptor{};
-    certfileDescription.name = "certfile";
-    certfileDescription.type = rcl_interfaces::msg::ParameterType::PARAMETER_STRING;
-    certfileDescription.description = "Path to the certificate to use for TLS";
-    certfileDescription.read_only = true;
-    this->declare_parameter("certfile", "", certfileDescription);
-
-    auto keyfileDescription = rcl_interfaces::msg::ParameterDescriptor{};
-    keyfileDescription.name = "keyfile";
-    keyfileDescription.type = rcl_interfaces::msg::ParameterType::PARAMETER_STRING;
-    keyfileDescription.description = "Path to the private key to use for TLS";
-    keyfileDescription.read_only = true;
-    this->declare_parameter("keyfile", "", keyfileDescription);
-
-    auto maxQosDepthDescription = rcl_interfaces::msg::ParameterDescriptor{};
-    maxQosDepthDescription.name = "max_qos_depth";
-    maxQosDepthDescription.type = rcl_interfaces::msg::ParameterType::PARAMETER_INTEGER;
-    maxQosDepthDescription.description = "Maximum depth used for the QoS profile of subscriptions.";
-    maxQosDepthDescription.read_only = true;
-    maxQosDepthDescription.additional_constraints = "Must be a non-negative integer";
-    maxQosDepthDescription.integer_range.resize(1);
-    maxQosDepthDescription.integer_range[0].from_value = 0;
-    maxQosDepthDescription.integer_range[0].to_value = INT32_MAX;
-    maxQosDepthDescription.integer_range[0].step = 1;
-    this->declare_parameter("max_qos_depth", int(DEFAULT_MAX_QOS_DEPTH), maxQosDepthDescription);
-
-    auto topicWhiteListDescription = rcl_interfaces::msg::ParameterDescriptor{};
-    topicWhiteListDescription.name = "topic_whitelist";
-    topicWhiteListDescription.type = rcl_interfaces::msg::ParameterType::PARAMETER_STRING_ARRAY;
-    topicWhiteListDescription.description =
-      "List of regular expressions (ECMAScript) of whitelisted topic names.";
-    topicWhiteListDescription.read_only = true;
-    this->declare_parameter<std::vector<std::string>>(
-      topicWhiteListDescription.name, std::vector<std::string>({".*"}), topicWhiteListDescription);
-
-    auto sendBufferLimit = rcl_interfaces::msg::ParameterDescriptor{};
-    sendBufferLimit.name = "send_buffer_limit";
-    sendBufferLimit.type = rcl_interfaces::msg::ParameterType::PARAMETER_INTEGER;
-    sendBufferLimit.description =
-      "Connection send buffer limit in bytes. Messages will be dropped when a connection's send "
-      "buffer reaches this limit to avoid a queue of outdated messages building up.";
-    sendBufferLimit.integer_range.resize(1);
-    sendBufferLimit.integer_range[0].from_value = 0;
-    sendBufferLimit.integer_range[0].to_value = std::numeric_limits<int64_t>::max();
-    sendBufferLimit.read_only = true;
-    this->declare_parameter(sendBufferLimit.name,
-                            static_cast<int64_t>(foxglove::DEFAULT_SEND_BUFFER_LIMIT_BYTES),
-                            sendBufferLimit);
-
-    const auto regexPatterns =
-      this->get_parameter(topicWhiteListDescription.name).as_string_array();
-    _topicWhitelistPatterns.reserve(regexPatterns.size());
-    for (const auto& pattern : regexPatterns) {
-      try {
-        _topicWhitelistPatterns.push_back(
-          std::regex(pattern, std::regex_constants::ECMAScript | std::regex_constants::icase));
-      } catch (const std::exception& ex) {
-        RCLCPP_ERROR(this->get_logger(), "Ignoring invalid regular expression '%s': %s",
-                     pattern.c_str(), ex.what());
-      }
-    }
-
+    const auto port = static_cast<uint16_t>(this->get_parameter(PARAM_PORT).as_int());
+    const auto address = this->get_parameter(PARAM_ADDRESS).as_string();
     const auto send_buffer_limit =
-      static_cast<size_t>(this->get_parameter("send_buffer_limit").as_int());
-    const auto useTLS = this->get_parameter("tls").as_bool();
-    const auto certfile = this->get_parameter("certfile").as_string();
-    const auto keyfile = this->get_parameter("keyfile").as_string();
+      static_cast<size_t>(this->get_parameter(PARAM_SEND_BUFFER_LIMIT).as_int());
+    const auto useTLS = this->get_parameter(PARAM_USETLS).as_bool();
+    const auto certfile = this->get_parameter(PARAM_CERTFILE).as_string();
+    const auto keyfile = this->get_parameter(PARAM_KEYFILE).as_string();
+    _maxQosDepth = static_cast<size_t>(this->get_parameter(PARAM_MAX_QOS_DEPTH).as_int());
+    const auto topicWhiteList = this->get_parameter(PARAM_TOPIC_WHITELIST).as_string_array();
+    _topicWhitelistPatterns = parseRegexStrings(this, topicWhiteList);
+    const auto serviceWhiteList = this->get_parameter(PARAM_SERVICE_WHITELIST).as_string_array();
+    _serviceWhitelistPatterns = parseRegexStrings(this, serviceWhiteList);
+    const auto paramWhiteList = this->get_parameter(PARAM_PARAMETER_WHITELIST).as_string_array();
+    const auto paramWhitelistPatterns = parseRegexStrings(this, paramWhiteList);
+    const auto useCompression = this->get_parameter(PARAM_USE_COMPRESSION).as_bool();
     _useSimTime = this->get_parameter("use_sim_time").as_bool();
-    const auto logHandler = std::bind(&FoxgloveBridge::logHandler, this, _1, _2);
 
-    std::vector<std::string> serverCapabilities = {
+    _paramInterface = std::make_shared<ParameterInterface>(this, paramWhitelistPatterns);
+
+    const auto logHandler = std::bind(&FoxgloveBridge::logHandler, this, _1, _2);
+    foxglove::ServerOptions serverOptions;
+    serverOptions.capabilities = {
       foxglove::CAPABILITY_CLIENT_PUBLISH,
+      foxglove::CAPABILITY_PARAMETERS,
+      foxglove::CAPABILITY_PARAMETERS_SUBSCRIBE,
+      foxglove::CAPABILITY_SERVICES,
     };
     if (_useSimTime) {
-      serverCapabilities.push_back(foxglove::CAPABILITY_TIME);
+      serverOptions.capabilities.push_back(foxglove::CAPABILITY_TIME);
     }
+    serverOptions.supportedEncodings = {"cdr"};
+    serverOptions.metadata = {{"ROS_DISTRO", std::getenv("ROS_DISTRO")}};
+    serverOptions.sendBufferLimitBytes = send_buffer_limit;
+    serverOptions.sessionId = std::to_string(std::time(nullptr));
+    serverOptions.useCompression = useCompression;
 
     if (useTLS) {
+      serverOptions.certfile = certfile;
+      serverOptions.keyfile = keyfile;
       _server = std::make_unique<foxglove::Server<foxglove::WebSocketTls>>(
-        "foxglove_bridge", std::move(logHandler), serverCapabilities, send_buffer_limit, certfile,
-        keyfile);
+        "foxglove_bridge", std::move(logHandler), serverOptions);
     } else {
       _server = std::make_unique<foxglove::Server<foxglove::WebSocketNoTls>>(
-        "foxglove_bridge", std::move(logHandler), serverCapabilities, send_buffer_limit);
+        "foxglove_bridge", std::move(logHandler), serverOptions);
     }
     _server->setSubscribeHandler(std::bind(&FoxgloveBridge::subscribeHandler, this, _1, _2));
     _server->setUnsubscribeHandler(std::bind(&FoxgloveBridge::unsubscribeHandler, this, _1, _2));
@@ -157,9 +91,17 @@ public:
       std::bind(&FoxgloveBridge::clientUnadvertiseHandler, this, _1, _2));
     _server->setClientMessageHandler(
       std::bind(&FoxgloveBridge::clientMessageHandler, this, _1, _2));
+    _server->setParameterRequestHandler(
+      std::bind(&FoxgloveBridge::parameterRequestHandler, this, _1, _2, _3));
+    _server->setParameterChangeHandler(
+      std::bind(&FoxgloveBridge::parameterChangeHandler, this, _1, _2, _3));
+    _server->setParameterSubscriptionHandler(
+      std::bind(&FoxgloveBridge::parameterSubscriptionHandler, this, _1, _2, _3));
+    _server->setServiceRequestHandler(
+      std::bind(&FoxgloveBridge::serviceRequestHandler, this, _1, _2));
 
-    auto address = this->get_parameter("address").as_string();
-    uint16_t port = uint16_t(this->get_parameter("port").as_int());
+    _paramInterface->setParamUpdateCallback(std::bind(&FoxgloveBridge::parameterUpdates, this, _1));
+
     _server->start(address, port);
 
     // Get the actual port we bound to
@@ -167,10 +109,8 @@ public:
     if (port != listeningPort) {
       RCLCPP_DEBUG(this->get_logger(), "Reassigning \"port\" parameter from %d to %d", port,
                    listeningPort);
-      this->set_parameter(rclcpp::Parameter{"port", listeningPort});
+      this->set_parameter(rclcpp::Parameter{PARAM_PORT, listeningPort});
     }
-
-    _maxQosDepth = static_cast<size_t>(this->get_parameter("max_qos_depth").as_int());
 
     // Start the thread polling for rosgraph changes
     _rosgraphPollThread =
@@ -179,6 +119,7 @@ public:
     _subscriptionCallbackGroup = this->create_callback_group(rclcpp::CallbackGroupType::Reentrant);
     _clientPublishCallbackGroup =
       this->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    _servicesCallbackGroup = this->create_callback_group(rclcpp::CallbackGroupType::Reentrant);
 
     if (_useSimTime) {
       _clockSubscription = this->create_subscription<rosgraph_msgs::msg::Clock>(
@@ -202,6 +143,7 @@ public:
 
   void rosgraphPollThread() {
     updateAdvertisedTopics();
+    updateAdvertisedServices();
 
     auto graphEvent = this->get_graph_event();
     while (rclcpp::ok()) {
@@ -210,6 +152,7 @@ public:
       if (triggered) {
         RCLCPP_DEBUG(this->get_logger(), "rosgraph change detected");
         updateAdvertisedTopics();
+        updateAdvertisedServices();
         // Graph changes tend to come in batches, so wait a bit before checking again
         std::this_thread::sleep_for(500ms);
       }
@@ -335,6 +278,97 @@ public:
     }
   }
 
+  void updateAdvertisedServices() {
+    if (!rclcpp::ok()) {
+      return;
+    }
+
+    // Get the current list of visible services and datatypes from the ROS graph
+    const auto serviceNamesAndTypes =
+      this->get_node_graph_interface()->get_service_names_and_types();
+
+    std::lock_guard<std::mutex> lock(_servicesMutex);
+
+    // Remove advertisements for services that have been removed
+    std::vector<foxglove::ServiceId> servicesToRemove;
+    for (const auto& service : _advertisedServices) {
+      const auto it = std::find_if(serviceNamesAndTypes.begin(), serviceNamesAndTypes.end(),
+                                   [service](const auto& serviceNameAndTypes) {
+                                     return serviceNameAndTypes.first == service.second.name;
+                                   });
+      if (it == serviceNamesAndTypes.end()) {
+        servicesToRemove.push_back(service.first);
+      }
+    }
+    for (auto serviceId : servicesToRemove) {
+      _advertisedServices.erase(serviceId);
+    }
+    _server->removeServices(servicesToRemove);
+
+    // Advertise new services
+    std::vector<foxglove::ServiceWithoutId> newServices;
+    for (const auto& serviceNamesAndType : serviceNamesAndTypes) {
+      const auto& serviceName = serviceNamesAndType.first;
+      const auto& datatypes = serviceNamesAndType.second;
+
+      // Ignore the service if it's already advertised
+      if (std::find_if(_advertisedServices.begin(), _advertisedServices.end(),
+                       [serviceName](const auto& idWithService) {
+                         return idWithService.second.name == serviceName;
+                       }) != _advertisedServices.end()) {
+        continue;
+      }
+
+      // Ignore the service if it is not on the service whitelist
+      if (std::find_if(_serviceWhitelistPatterns.begin(), _serviceWhitelistPatterns.end(),
+                       [&serviceName](const auto& regex) {
+                         return std::regex_match(serviceName, regex);
+                       }) == _serviceWhitelistPatterns.end()) {
+        continue;
+      }
+
+      foxglove::ServiceWithoutId service;
+      service.name = serviceName;
+      service.type = datatypes.front();
+
+      try {
+        auto [format, reqSchema] = _messageDefinitionCache.get_full_text(service.type + "_Request");
+        auto resSchema = _messageDefinitionCache.get_full_text(service.type + "_Response").second;
+        switch (format) {
+          case foxglove::MessageDefinitionFormat::MSG:
+            service.requestSchema = reqSchema;
+            service.responseSchema = resSchema;
+            break;
+          case foxglove::MessageDefinitionFormat::IDL:
+            RCLCPP_WARN(this->get_logger(),
+                        "IDL message definition format cannot be communicated over ws-protocol. "
+                        "Service \"%s\" (%s) may not decode correctly in clients",
+                        service.name.c_str(), service.type.c_str());
+            service.requestSchema = reqSchema;
+            service.responseSchema = resSchema;
+            break;
+        }
+      } catch (const foxglove::DefinitionNotFoundError& err) {
+        RCLCPP_WARN(this->get_logger(), "Could not find definition for type %s: %s",
+                    service.type.c_str(), err.what());
+        // We still advertise the service, but with an emtpy schema
+        service.requestSchema = "";
+        service.responseSchema = "";
+      } catch (const std::exception& err) {
+        RCLCPP_WARN(this->get_logger(), "Failed to add service \"%s\" (%s): %s",
+                    service.name.c_str(), service.type.c_str(), err.what());
+        continue;
+      }
+
+      newServices.push_back(service);
+    }
+
+    const auto serviceIds = _server->addServices(newServices);
+    for (size_t i = 0; i < serviceIds.size(); ++i) {
+      _advertisedServices.emplace(serviceIds[i], newServices[i]);
+    }
+  }
+
 private:
   struct PairHash {
     template <class T1, class T2>
@@ -346,14 +380,20 @@ private:
   std::unique_ptr<foxglove::ServerInterface> _server;
   foxglove::MessageDefinitionCache _messageDefinitionCache;
   std::vector<std::regex> _topicWhitelistPatterns;
+  std::vector<std::regex> _serviceWhitelistPatterns;
+  std::shared_ptr<ParameterInterface> _paramInterface;
   std::unordered_map<TopicAndDatatype, foxglove::Channel, PairHash> _advertisedTopics;
+  std::unordered_map<foxglove::ServiceId, foxglove::ServiceWithoutId> _advertisedServices;
   std::unordered_map<foxglove::ChannelId, TopicAndDatatype> _channelToTopicAndDatatype;
   std::unordered_map<foxglove::ChannelId, SubscriptionsByClient> _subscriptions;
   PublicationsByClient _clientAdvertisedTopics;
+  std::unordered_map<foxglove::ServiceId, GenericClient::SharedPtr> _serviceClients;
   rclcpp::CallbackGroup::SharedPtr _subscriptionCallbackGroup;
   rclcpp::CallbackGroup::SharedPtr _clientPublishCallbackGroup;
+  rclcpp::CallbackGroup::SharedPtr _servicesCallbackGroup;
   std::mutex _subscriptionsMutex;
   std::mutex _clientAdvertisementsMutex;
+  std::mutex _servicesMutex;
   std::unique_ptr<std::thread> _rosgraphPollThread;
   size_t _maxQosDepth = DEFAULT_MAX_QOS_DEPTH;
   std::shared_ptr<rclcpp::Subscription<rosgraph_msgs::msg::Clock>> _clockSubscription;
@@ -623,6 +663,42 @@ private:
     publisher->publish(serializedMessage);
   }
 
+  void parameterChangeHandler(const std::vector<foxglove::Parameter>& parameters,
+                              const std::optional<std::string>& requestId,
+                              foxglove::ConnHandle hdl) {
+    _paramInterface->setParams(parameters, std::chrono::seconds(5));
+
+    // If a request Id was given, send potentially updated parameters back to client
+    if (requestId) {
+      std::vector<std::string> parameterNames(parameters.size());
+      for (size_t i = 0; i < parameters.size(); ++i) {
+        parameterNames[i] = parameters[i].getName();
+      }
+      parameterRequestHandler(parameterNames, requestId, hdl);
+    }
+  }
+
+  void parameterRequestHandler(const std::vector<std::string>& parameters,
+                               const std::optional<std::string>& requestId,
+                               foxglove::ConnHandle hdl) {
+    const auto params = _paramInterface->getParams(parameters, std::chrono::seconds(5));
+    _server->publishParameterValues(hdl, params, requestId);
+  }
+
+  void parameterSubscriptionHandler(const std::vector<std::string>& parameters,
+                                    foxglove::ParameterSubscriptionOperation op,
+                                    foxglove::ConnHandle) {
+    if (op == foxglove::ParameterSubscriptionOperation::SUBSCRIBE) {
+      _paramInterface->subscribeParams(parameters);
+    } else {
+      _paramInterface->unsubscribeParams(parameters);
+    }
+  }
+
+  void parameterUpdates(const std::vector<foxglove::Parameter>& parameters) {
+    _server->updateParameterValues(parameters);
+  }
+
   void logHandler(LogLevel level, char const* msg) {
     switch (level) {
       case LogLevel::Debug:
@@ -649,10 +725,60 @@ private:
     // to `/rosout` will cause a feedback loop
     const auto timestamp = this->now().nanoseconds();
     assert(timestamp >= 0 && "Timestamp is negative");
-    const auto payload =
-      std::string_view{reinterpret_cast<const char*>(msg->get_rcl_serialized_message().buffer),
-                       msg->get_rcl_serialized_message().buffer_length};
-    _server->sendMessage(clientHandle, channel.id, static_cast<uint64_t>(timestamp), payload);
+    const auto rclSerializedMsg = msg->get_rcl_serialized_message();
+    _server->sendMessage(clientHandle, channel.id, static_cast<uint64_t>(timestamp),
+                         rclSerializedMsg.buffer, rclSerializedMsg.buffer_length);
+  }
+
+  void serviceRequestHandler(const foxglove::ServiceRequest& request,
+                             foxglove::ConnHandle clientHandle) {
+    RCLCPP_DEBUG(this->get_logger(), "Received a request for service %d", request.serviceId);
+
+    std::lock_guard<std::mutex> lock(_servicesMutex);
+    const auto serviceIt = _advertisedServices.find(request.serviceId);
+    if (serviceIt == _advertisedServices.end()) {
+      RCLCPP_ERROR(this->get_logger(), "Service with id '%d' does not exist", request.serviceId);
+      return;
+    }
+
+    auto clientIt = _serviceClients.find(request.serviceId);
+    if (clientIt == _serviceClients.end()) {
+      try {
+        auto clientOptions = rcl_client_get_default_options();
+        auto genClient = GenericClient::make_shared(
+          this->get_node_base_interface().get(), this->get_node_graph_interface(),
+          serviceIt->second.name, serviceIt->second.type, clientOptions);
+        clientIt = _serviceClients.emplace(request.serviceId, std::move(genClient)).first;
+        this->get_node_services_interface()->add_client(clientIt->second, _servicesCallbackGroup);
+      } catch (const std::exception& ex) {
+        RCLCPP_ERROR(get_logger(), "Failed to create service client for service %d (%s): %s",
+                     request.serviceId, serviceIt->second.name.c_str(), ex.what());
+        return;
+      }
+    }
+
+    auto client = clientIt->second;
+    if (!client->wait_for_service(1s)) {
+      RCLCPP_ERROR(get_logger(), "Service %d (%s) is not available", request.serviceId,
+                   serviceIt->second.name.c_str());
+      return;
+    }
+
+    auto reqMessage = std::make_shared<rclcpp::SerializedMessage>(request.data.size());
+    auto& rclSerializedMsg = reqMessage->get_rcl_serialized_message();
+    std::memcpy(rclSerializedMsg.buffer, request.data.data(), request.data.size());
+    rclSerializedMsg.buffer_length = request.data.size();
+
+    auto responseReceivedCallback = [this, request,
+                                     clientHandle](GenericClient::SharedFuture future) {
+      const auto serializedResponseMsg = future.get()->get_rcl_serialized_message();
+      foxglove::ServiceRequest response{request.serviceId, request.callId, request.encoding,
+                                        std::vector<uint8_t>(serializedResponseMsg.buffer_length)};
+      std::memcpy(response.data.data(), serializedResponseMsg.buffer,
+                  serializedResponseMsg.buffer_length);
+      _server->sendServiceResponse(clientHandle, response);
+    };
+    client->async_send_request(reqMessage, responseReceivedCallback);
   }
 };
 
