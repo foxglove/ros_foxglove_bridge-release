@@ -9,7 +9,7 @@ if(POLICY CMP0024)
   set(CMAKE_POLICY_DEFAULT_CMP0024 NEW)
 endif()
 
-project(foxglove_bridge LANGUAGES CXX VERSION 0.3.0)
+project(foxglove_bridge LANGUAGES CXX VERSION 0.4.0)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -20,6 +20,7 @@ find_package(nlohmann_json QUIET)
 find_package(OpenSSL REQUIRED)
 find_package(Threads REQUIRED)
 find_package(websocketpp REQUIRED)
+find_package(ZLIB REQUIRED)
 
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Debug)
@@ -64,6 +65,8 @@ endif()
 # Build the foxglove_bridge_base library
 add_library(foxglove_bridge_base SHARED
   foxglove_bridge_base/src/foxglove_bridge.cpp
+  foxglove_bridge_base/src/parameter.cpp
+  foxglove_bridge_base/src/serialization.cpp
   foxglove_bridge_base/src/test/test_client.cpp
 )
 target_include_directories(foxglove_bridge_base
@@ -74,6 +77,7 @@ target_include_directories(foxglove_bridge_base
 target_link_libraries(foxglove_bridge_base
   OpenSSL::Crypto
   OpenSSL::SSL
+  ZLIB::ZLIB
   ${CMAKE_THREAD_LIBS_INIT}
 )
 if(nlohmann_json_FOUND)
@@ -101,8 +105,18 @@ if("$ENV{ROS_VERSION}" STREQUAL "1")
       DEPENDS Boost
     )
 
-    add_library(foxglove_bridge_nodelet ros1_foxglove_bridge/src/ros1_foxglove_bridge_nodelet.cpp)
-    target_include_directories(foxglove_bridge_nodelet SYSTEM PRIVATE ${catkin_INCLUDE_DIRS})
+    add_library(foxglove_bridge_nodelet
+      ros1_foxglove_bridge/src/ros1_foxglove_bridge_nodelet.cpp
+      ros1_foxglove_bridge/src/param_utils.cpp
+      ros1_foxglove_bridge/src/service_utils.cpp
+    )
+    target_include_directories(foxglove_bridge_nodelet
+      SYSTEM PRIVATE
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/foxglove_bridge_base/include>
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/ros1_foxglove_bridge/include>
+        $<INSTALL_INTERFACE:include>
+        ${catkin_INCLUDE_DIRS}
+    )
     target_link_libraries(foxglove_bridge_nodelet foxglove_bridge_base ${catkin_LIBRARIES})
 
     add_executable(foxglove_bridge ros1_foxglove_bridge/src/ros1_foxglove_bridge_node.cpp)
@@ -124,7 +138,10 @@ elseif("$ENV{ROS_VERSION}" STREQUAL "2")
 
     add_library(foxglove_bridge_component SHARED
       ros2_foxglove_bridge/src/message_definition_cache.cpp
+      ros2_foxglove_bridge/src/param_utils.cpp
       ros2_foxglove_bridge/src/ros2_foxglove_bridge.cpp
+      ros2_foxglove_bridge/src/parameter_interface.cpp
+      ros2_foxglove_bridge/src/generic_client.cpp
     )
     target_include_directories(foxglove_bridge_component
       PUBLIC
@@ -154,7 +171,7 @@ if(ROS_BUILD_TYPE STREQUAL "catkin")
   if (CATKIN_ENABLE_TESTING)
     message(STATUS "Building tests with catkin")
 
-    find_package(catkin REQUIRED COMPONENTS roscpp std_msgs)
+    find_package(catkin REQUIRED COMPONENTS roscpp std_msgs std_srvs)
     if(NOT "$ENV{ROS_DISTRO}" STREQUAL "melodic")
       find_package(GTest REQUIRED)
     endif()
@@ -162,6 +179,9 @@ if(ROS_BUILD_TYPE STREQUAL "catkin")
 
     catkin_add_gtest(version_test foxglove_bridge_base/tests/version_test.cpp)
     target_link_libraries(version_test foxglove_bridge_base)
+
+    catkin_add_gtest(serialization_test foxglove_bridge_base/tests/serialization_test.cpp)
+    target_link_libraries(serialization_test foxglove_bridge_base)
 
     add_rostest_gtest(smoke_test ros1_foxglove_bridge/tests/smoke.test ros1_foxglove_bridge/tests/smoke_test.cpp)
     target_include_directories(smoke_test SYSTEM PRIVATE
@@ -182,8 +202,11 @@ elseif(ROS_BUILD_TYPE STREQUAL "ament_cmake")
     ament_add_gtest(version_test foxglove_bridge_base/tests/version_test.cpp)
     target_link_libraries(version_test foxglove_bridge_base)
 
+    ament_add_gtest(serialization_test foxglove_bridge_base/tests/serialization_test.cpp)
+    target_link_libraries(serialization_test foxglove_bridge_base)
+
     ament_add_gtest(smoke_test ros2_foxglove_bridge/tests/smoke_test.cpp)
-    ament_target_dependencies(smoke_test rclcpp rclcpp_components std_msgs)
+    ament_target_dependencies(smoke_test rclcpp rclcpp_components std_msgs std_srvs)
     target_link_libraries(smoke_test foxglove_bridge_base)
   endif()
 endif()
