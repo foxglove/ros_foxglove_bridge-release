@@ -17,6 +17,8 @@ The `foxglove_bridge` uses the [Foxglove WebSocket protocol](https://github.com/
 
 ## Installation
 
+**Note**: This project is under active development and binary releases of `foxglove_bridge` might be quite outdated. For the latest features and bug fixes, consider [building foxglove_bridge from source](#building-from-source).
+
 The `foxglove_bridge` package is available for ROS 1 Melodic and Noetic, and ROS 2 Humble and Rolling. Earlier releases of ROS will not be supported due to API design and/or performance limitations. The package can be installed with the following command:
 
 ```bash
@@ -30,13 +32,33 @@ To run the bridge node, it is recommended to use the provided launch file:
 **ROS 1**
 
 ```bash
-$ roslaunch foxglove_bridge foxglove_bridge.launch --screen
+$ roslaunch --screen foxglove_bridge foxglove_bridge.launch port:=8765
+```
+
+```xml
+<launch>
+  <!-- Including in another launch file -->
+  <include file="$(find foxglove_bridge)/launch/foxglove_bridge.launch">
+    <arg name="port" value="8765" />
+    <!-- ... other arguments ... -->
+  </include>
+</launch>
 ```
 
 **ROS 2**
 
 ```bash
-$ ros2 launch foxglove_bridge foxglove_bridge_launch.xml
+$ ros2 launch foxglove_bridge foxglove_bridge_launch.xml port:=8765
+```
+
+```xml
+<launch>
+  <!-- Including in another launch file -->
+  <include file="$(find-pkg-share foxglove_bridge)/launch/foxglove_bridge_launch.xml"/>
+    <arg name="port" value="8765"/>
+    <!-- ... other arguments ... -->
+  </include>
+</launch>
 ```
 
 ### Configuration
@@ -49,55 +71,37 @@ Parameters are provided to configure the behavior of the bridge. These parameter
  * __certfile__: Path to the certificate to use for TLS. Required when __tls__ is set to `true`. Defaults to `""`.
  * __keyfile__: Path to the private key to use for TLS. Required when __tls__ is set to `true`. Defaults to `""`.
  * __topic_whitelist__: List of regular expressions ([ECMAScript grammar](https://en.cppreference.com/w/cpp/regex/ecmascript)) of whitelisted topic names. Defaults to `[".*"]`.
+ * __service_whitelist__: List of regular expressions ([ECMAScript grammar](https://en.cppreference.com/w/cpp/regex/ecmascript)) of whitelisted service names. Defaults to `[".*"]`.
+ * __param_whitelist__: List of regular expressions ([ECMAScript grammar](https://en.cppreference.com/w/cpp/regex/ecmascript)) of whitelisted parameter names. Defaults to `[".*"]`.
  * __send_buffer_limit__: Connection send buffer limit in bytes. Messages will be dropped when a connection's send buffer reaches this limit to avoid a queue of outdated messages building up. Defaults to `10000000` (10 MB).
+ * __use_compression__: Use websocket compression (permessage-deflate). Suited for connections with smaller bandwith, at the cost of additional CPU load.
  * (ROS 1) __max_update_ms__: The maximum number of milliseconds to wait in between polling `roscore` for new topics, services, or parameters. Defaults to `5000`.
  * (ROS 2) __num_threads__: The number of threads to use for the ROS node executor. This controls the number of subscriptions that can be processed in parallel. 0 means one thread per CPU core. Defaults to `0`.
  * (ROS 2) __max_qos_depth__: Maximum depth used for the QoS profile of subscriptions. Defaults to `10`.
 
+## Building from source
 
-## Clients
-
-[Foxglove Studio](https://foxglove.dev/studio) connects to `foxglove_bridge` for live robotics visualization.
-
-### Building from source
-
-You can also try `foxglove_bridge` by building from source or running a pre-built Docker container.
-
-#### Fetch source and install dependencies
+### Fetch source and install dependencies
 
 ```bash
 cd <path/to/your/ros_ws>
 git clone https://github.com/foxglove/ros-foxglove-bridge.git src/ros-foxglove-bridge
 rosdep update
-rosdep install -i --from-path src -y
+rosdep install --ignore-src --default-yes --from-path src
 ```
 
-#### ROS 1
+### ROS 1
 ```
 catkin_make
 source install/local_setup.bash
-rosrun foxglove_bridge foxglove_bridge
+roslaunch --screen foxglove_bridge foxglove_bridge.launch
 ```
 
-#### ROS 2
+### ROS 2
 ```
-colcon build
+colcon build --event-handlers console_direct+ --symlink-install
 source install/local_setup.bash
-ros2 run foxglove_bridge foxglove_bridge
-```
-
-### Docker
-
-#### ROS 1
-
-```bash
-docker run --rm -it -v /opt/ros:/opt/ros --net=host ghcr.io/foxglove/noetic-ros1-bridge
-```
-
-#### ROS 2
-
-```bash
-docker run --rm -it -v /opt/ros:/opt/ros --net=host ghcr.io/foxglove/humble-ros2-bridge
+ros2 launch foxglove_bridge foxglove_bridge_launch.xml
 ```
 
 ## Clients

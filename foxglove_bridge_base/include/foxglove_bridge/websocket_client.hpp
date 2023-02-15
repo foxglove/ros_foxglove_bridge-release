@@ -2,6 +2,7 @@
 
 #include <functional>
 #include <future>
+#include <optional>
 #include <shared_mutex>
 #include <utility>
 #include <vector>
@@ -12,6 +13,7 @@
 #include <websocketpp/common/thread.hpp>
 
 #include "common.hpp"
+#include "parameter.hpp"
 #include "serialization.hpp"
 
 namespace foxglove {
@@ -41,6 +43,13 @@ public:
   virtual void advertise(const std::vector<ClientAdvertisement>& channels) = 0;
   virtual void unadvertise(const std::vector<ClientChannelId>& channelIds) = 0;
   virtual void publish(ClientChannelId channelId, const uint8_t* buffer, size_t size) = 0;
+  virtual void sendServiceRequest(const ServiceRequest& request) = 0;
+  virtual void getParameters(const std::vector<std::string>& parameterNames,
+                             const std::optional<std::string>& requestId) = 0;
+  virtual void setParameters(const std::vector<Parameter>& parameters,
+                             const std::optional<std::string>& requestId) = 0;
+  virtual void subscribeParameterUpdates(const std::vector<std::string>& parameterNames) = 0;
+  virtual void unsubscribeParameterUpdates(const std::vector<std::string>& parameterNames) = 0;
 
   virtual void setTextMessageHandler(TextMessageHandler handler) = 0;
   virtual void setBinaryMessageHandler(BinaryMessageHandler handler) = 0;
@@ -173,6 +182,43 @@ public:
     foxglove::WriteUint32LE(payload.data() + 1, channelId);
     std::memcpy(payload.data() + 1 + 4, buffer, size);
     sendBinary(payload.data(), payload.size());
+  }
+
+  void sendServiceRequest(const ServiceRequest& request) override {
+    std::vector<uint8_t> payload(1 + request.size());
+    payload[0] = uint8_t(ClientBinaryOpcode::SERVICE_CALL_REQUEST);
+    request.write(payload.data() + 1);
+    sendBinary(payload.data(), payload.size());
+  }
+
+  void getParameters(const std::vector<std::string>& parameterNames,
+                     const std::optional<std::string>& requestId = std::nullopt) override {
+    nlohmann::json jsonPayload{{"op", "getParameters"}, {"parameterNames", parameterNames}};
+    if (requestId) {
+      jsonPayload["id"] = requestId.value();
+    }
+    sendText(jsonPayload.dump());
+  }
+
+  void setParameters(const std::vector<Parameter>& parameters,
+                     const std::optional<std::string>& requestId = std::nullopt) override {
+    nlohmann::json jsonPayload{{"op", "setParameters"}, {"parameters", parameters}};
+    if (requestId) {
+      jsonPayload["id"] = requestId.value();
+    }
+    sendText(jsonPayload.dump());
+  }
+
+  void subscribeParameterUpdates(const std::vector<std::string>& parameterNames) override {
+    nlohmann::json jsonPayload{{"op", "subscribeParameterUpdates"},
+                               {"parameterNames", parameterNames}};
+    sendText(jsonPayload.dump());
+  }
+
+  void unsubscribeParameterUpdates(const std::vector<std::string>& parameterNames) override {
+    nlohmann::json jsonPayload{{"op", "unsubscribeParameterUpdates"},
+                               {"parameterNames", parameterNames}};
+    sendText(jsonPayload.dump());
   }
 
   void setTextMessageHandler(TextMessageHandler handler) override {
