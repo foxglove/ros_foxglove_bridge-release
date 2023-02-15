@@ -1,13 +1,15 @@
 #include <chrono>
-#include <future>
 
 #define ASIO_STANDALONE
 #include <websocketpp/config/asio_client.hpp>
 
+#include <foxglove_bridge/serialization.hpp>
 #include <foxglove_bridge/test/test_client.hpp>
 #include <foxglove_bridge/websocket_client.hpp>
 
 namespace foxglove {
+
+constexpr auto DEFAULT_TIMEOUT = std::chrono::seconds(5);
 
 std::vector<uint8_t> connectClientAndReceiveMsg(const std::string& uri,
                                                 const std::string& topic_name) {
@@ -28,9 +30,9 @@ std::vector<uint8_t> connectClientAndReceiveMsg(const std::string& uri,
   });
 
   // Connect the client and wait for the channel future
-  if (std::future_status::ready != wsClient.connect(uri).wait_for(std::chrono::seconds(5))) {
+  if (std::future_status::ready != wsClient.connect(uri).wait_for(DEFAULT_TIMEOUT)) {
     throw std::runtime_error("Client failed to connect");
-  } else if (std::future_status::ready != channelFuture.wait_for(std::chrono::seconds(5))) {
+  } else if (std::future_status::ready != channelFuture.wait_for(DEFAULT_TIMEOUT)) {
     throw std::runtime_error("Client failed to receive channel");
   }
 
@@ -49,10 +51,72 @@ std::vector<uint8_t> connectClientAndReceiveMsg(const std::string& uri,
   wsClient.subscribe({{1, channelId}});
 
   // Wait until we have received a binary message
-  if (std::future_status::ready != msgFuture.wait_for(std::chrono::seconds(5))) {
+  if (std::future_status::ready != msgFuture.wait_for(DEFAULT_TIMEOUT)) {
     throw std::runtime_error("Client failed to receive message");
   }
   return msgFuture.get();
+}
+
+std::future<std::vector<Parameter>> waitForParameters(std::shared_ptr<ClientInterface> client,
+                                                      const std::string& requestId) {
+  auto promise = std::make_shared<std::promise<std::vector<Parameter>>>();
+  auto future = promise->get_future();
+
+  client->setTextMessageHandler(
+    [promise = std::move(promise), requestId](const std::string& payload) {
+      const auto msg = nlohmann::json::parse(payload);
+      const auto& op = msg["op"].get<std::string>();
+      const auto id = msg.value("id", "");
+
+      if (op == "parameterValues" && (requestId.empty() || requestId == id)) {
+        const auto parameters = msg["parameters"].get<std::vector<Parameter>>();
+        promise->set_value(std::move(parameters));
+      }
+    });
+
+  return future;
+}
+
+std::future<ServiceResponse> waitForServiceResponse(std::shared_ptr<ClientInterface> client) {
+  auto promise = std::make_shared<std::promise<ServiceResponse>>();
+  auto future = promise->get_future();
+
+  client->setBinaryMessageHandler(
+    [promise = std::move(promise)](const uint8_t* data, size_t dataLength) mutable {
+      if (static_cast<BinaryOpcode>(data[0]) != BinaryOpcode::SERVICE_CALL_RESPONSE) {
+        return;
+      }
+
+      std::cerr << "Received a response of size " << std::to_string(dataLength) << std::endl;
+      foxglove::ServiceResponse response;
+      response.read(data + 1, dataLength - 1);
+      promise->set_value(response);
+    });
+  return future;
+}
+
+std::future<Service> waitForService(std::shared_ptr<ClientInterface> client,
+                                    const std::string& serviceName) {
+  auto promise = std::make_shared<std::promise<Service>>();
+  auto future = promise->get_future();
+
+  client->setTextMessageHandler(
+    [promise = std::move(promise), serviceName](const std::string& payload) mutable {
+      const auto msg = nlohmann::json::parse(payload);
+      const auto& op = msg["op"].get<std::string>();
+
+      if (op == "advertiseServices") {
+        const auto services = msg["services"].get<std::vector<Service>>();
+        for (const auto& service : services) {
+          if (service.name == serviceName) {
+            promise->set_value(service);
+            break;
+          }
+        }
+      }
+    });
+
+  return future;
 }
 
 // Explicit template instantiation
