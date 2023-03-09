@@ -449,7 +449,13 @@ private:
         _server->remoteEndpointString(clientHandle).c_str(), channelId, clientPublications.size());
       return;
     }
-    channelPublicationIt->second.publish(msg);
+
+    try {
+      channelPublicationIt->second.publish(msg);
+    } catch (const std::exception& ex) {
+      ROS_ERROR("Failed to publish message on topic '%s'",
+                channelPublicationIt->second.getTopic().c_str());
+    }
   }
 
   void updateAdvertisedTopicsAndServices(const ros::TimerEvent&) {
@@ -645,25 +651,31 @@ private:
         continue;
       }
 
-      const auto serviceType = serviceTypeFuture.get();
-      const auto srvDescription = _rosTypeInfoProvider.getServiceDescription(serviceType);
+      try {
+        const auto serviceType = serviceTypeFuture.get();
+        const auto srvDescription = _rosTypeInfoProvider.getServiceDescription(serviceType);
 
-      foxglove::ServiceWithoutId service;
-      service.name = serviceName;
-      service.type = serviceType;
+        foxglove::ServiceWithoutId service;
+        service.name = serviceName;
+        service.type = serviceType;
 
-      if (srvDescription) {
-        service.requestSchema = srvDescription->request->message_definition;
-        service.responseSchema = srvDescription->response->message_definition;
-      } else {
-        ROS_ERROR("Failed to retrieve type information for service '%s' of type '%s'",
-                  serviceName.c_str(), serviceType.c_str());
+        if (srvDescription) {
+          service.requestSchema = srvDescription->request->message_definition;
+          service.responseSchema = srvDescription->response->message_definition;
+        } else {
+          ROS_ERROR("Failed to retrieve type information for service '%s' of type '%s'",
+                    serviceName.c_str(), serviceType.c_str());
 
-        // We still advertise the channel, but with empty schema.
-        service.requestSchema = "";
-        service.responseSchema = "";
+          // We still advertise the channel, but with empty schema.
+          service.requestSchema = "";
+          service.responseSchema = "";
+        }
+        newServices.push_back(service);
+      } catch (const std::exception& e) {
+        ROS_ERROR("Failed to retrieve service type or service description of service %s: %s",
+                  serviceName.c_str(), e.what());
+        continue;
       }
-      newServices.push_back(service);
     }
 
     const auto serviceIds = _server->addServices(newServices);
@@ -676,7 +688,10 @@ private:
                      const std::optional<std::string>& requestId, ConnectionHandle hdl) {
     std::vector<std::string> parameterNames = parameters;
     if (parameterNames.empty()) {
-      getMTNodeHandle().getParamNames(parameterNames);
+      if (!getMTNodeHandle().getParamNames(parameterNames)) {
+        ROS_ERROR("Failed to retrieve parameter names");
+        return;
+      }
     }
 
     std::vector<foxglove::Parameter> params;
@@ -709,27 +724,31 @@ private:
         continue;
       }
 
-      const auto paramType = param.getType();
-      if (paramType == ParameterType::PARAMETER_BOOL) {
-        nh.setParam(paramName, param.getValue<bool>());
-      } else if (paramType == ParameterType::PARAMETER_INTEGER) {
-        nh.setParam(paramName, static_cast<int>(param.getValue<int64_t>()));
-      } else if (paramType == ParameterType::PARAMETER_DOUBLE) {
-        nh.setParam(paramName, param.getValue<double>());
-      } else if (paramType == ParameterType::PARAMETER_STRING) {
-        nh.setParam(paramName, param.getValue<std::string>());
-      } else if (paramType == ParameterType::PARAMETER_BOOL_ARRAY) {
-        nh.setParam(paramName, param.getValue<std::vector<bool>>());
-      } else if (paramType == ParameterType::PARAMETER_INTEGER_ARRAY) {
-        const auto int64Vec = param.getValue<std::vector<int64_t>>();
-        std::vector<int> intVec(int64Vec.begin(), int64Vec.end());
-        nh.setParam(paramName, intVec);
-      } else if (paramType == ParameterType::PARAMETER_DOUBLE_ARRAY) {
-        nh.setParam(paramName, param.getValue<std::vector<double>>());
-      } else if (paramType == ParameterType::PARAMETER_STRING_ARRAY) {
-        nh.setParam(paramName, param.getValue<std::vector<std::string>>());
-      } else if (paramType == ParameterType::PARAMETER_NOT_SET) {
-        nh.deleteParam(paramName);
+      try {
+        const auto paramType = param.getType();
+        if (paramType == ParameterType::PARAMETER_BOOL) {
+          nh.setParam(paramName, param.getValue<bool>());
+        } else if (paramType == ParameterType::PARAMETER_INTEGER) {
+          nh.setParam(paramName, static_cast<int>(param.getValue<int64_t>()));
+        } else if (paramType == ParameterType::PARAMETER_DOUBLE) {
+          nh.setParam(paramName, param.getValue<double>());
+        } else if (paramType == ParameterType::PARAMETER_STRING) {
+          nh.setParam(paramName, param.getValue<std::string>());
+        } else if (paramType == ParameterType::PARAMETER_BOOL_ARRAY) {
+          nh.setParam(paramName, param.getValue<std::vector<bool>>());
+        } else if (paramType == ParameterType::PARAMETER_INTEGER_ARRAY) {
+          const auto int64Vec = param.getValue<std::vector<int64_t>>();
+          std::vector<int> intVec(int64Vec.begin(), int64Vec.end());
+          nh.setParam(paramName, intVec);
+        } else if (paramType == ParameterType::PARAMETER_DOUBLE_ARRAY) {
+          nh.setParam(paramName, param.getValue<std::vector<double>>());
+        } else if (paramType == ParameterType::PARAMETER_STRING_ARRAY) {
+          nh.setParam(paramName, param.getValue<std::vector<std::string>>());
+        } else if (paramType == ParameterType::PARAMETER_NOT_SET) {
+          nh.deleteParam(paramName);
+        }
+      } catch (const std::exception& ex) {
+        ROS_ERROR("Failed to set parameter '%s': %s", paramName.c_str(), ex.what());
       }
     }
 
@@ -778,9 +797,9 @@ private:
       return;
     }
 
-    const std::string paramName = ros::names::clean(params[1]);
-    const XmlRpc::XmlRpcValue paramValue = params[2];
     try {
+      const std::string paramName = ros::names::clean(params[1]);
+      const XmlRpc::XmlRpcValue paramValue = params[2];
       const auto param = fromRosParam(paramName, paramValue);
       _server->updateParameterValues({param});
     } catch (const std::exception& ex) {
