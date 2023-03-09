@@ -1,3 +1,4 @@
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -20,9 +21,12 @@
 #include <foxglove_bridge/foxglove_bridge.hpp>
 #include <foxglove_bridge/generic_service.hpp>
 #include <foxglove_bridge/param_utils.hpp>
+#include <foxglove_bridge/regex_utils.hpp>
 #include <foxglove_bridge/server_factory.hpp>
 #include <foxglove_bridge/service_utils.hpp>
 #include <foxglove_bridge/websocket_server.hpp>
+
+namespace {
 
 class GenericCallback : public ros::CallbackInterface {
 public:
@@ -37,6 +41,16 @@ public:
 private:
   std::function<void(void)> _fn;
 };
+
+inline std::unordered_set<std::string> rpcValueToStringSet(const XmlRpc::XmlRpcValue& v) {
+  std::unordered_set<std::string> set;
+  for (int i = 0; i < v.size(); ++i) {
+    set.insert(v[i]);
+  }
+  return set;
+}
+
+}  // namespace
 
 namespace foxglove_bridge {
 
@@ -54,6 +68,7 @@ using TopicAndDatatype = std::pair<std::string, std::string>;
 using SubscriptionsByClient = std::map<ConnectionHandle, ros::Subscriber, std::owner_less<>>;
 using ClientPublications = std::unordered_map<foxglove::ClientChannelId, ros::Publisher>;
 using PublicationsByClient = std::map<ConnectionHandle, ClientPublications, std::owner_less<>>;
+using foxglove::isWhitelisted;
 
 class FoxgloveBridge : public nodelet::Nodelet {
 public:
@@ -71,6 +86,9 @@ public:
     const auto useCompression = nhp.param<bool>("use_compression", false);
     _useSimTime = nhp.param<bool>("/use_sim_time", false);
     const auto sessionId = nhp.param<std::string>("/run_id", std::to_string(std::time(nullptr)));
+    _capabilities = nhp.param<std::vector<std::string>>(
+      "capabilities", std::vector<std::string>(foxglove::DEFAULT_CAPABILITIES.begin(),
+                                               foxglove::DEFAULT_CAPABILITIES.end()));
 
     const auto topicWhitelistPatterns =
       nhp.param<std::vector<std::string>>("topic_whitelist", {".*"});
@@ -90,17 +108,19 @@ public:
       ROS_ERROR("Failed to parse one or more service whitelist patterns");
     }
 
+    const auto clientTopicWhitelist =
+      nhp.param<std::vector<std::string>>("client_topic_whitelist", {".*"});
+    const auto clientTopicWhitelistPatterns = parseRegexPatterns(clientTopicWhitelist);
+    if (clientTopicWhitelist.size() != clientTopicWhitelistPatterns.size()) {
+      ROS_ERROR("Failed to parse one or more service whitelist patterns");
+    }
+
     ROS_INFO("Starting %s with %s", ros::this_node::getName().c_str(),
              foxglove::WebSocketUserAgent());
 
     try {
       foxglove::ServerOptions serverOptions;
-      serverOptions.capabilities = {
-        foxglove::CAPABILITY_CLIENT_PUBLISH,
-        foxglove::CAPABILITY_PARAMETERS,
-        foxglove::CAPABILITY_PARAMETERS_SUBSCRIBE,
-        foxglove::CAPABILITY_SERVICES,
-      };
+      serverOptions.capabilities = _capabilities;
       if (_useSimTime) {
         serverOptions.capabilities.push_back(foxglove::CAPABILITY_TIME);
       }
@@ -112,6 +132,7 @@ public:
       serverOptions.certfile = certfile;
       serverOptions.keyfile = keyfile;
       serverOptions.useCompression = useCompression;
+      serverOptions.clientTopicWhitelistPatterns = clientTopicWhitelistPatterns;
 
       const auto logHandler =
         std::bind(&FoxgloveBridge::logHandler, this, std::placeholders::_1, std::placeholders::_2);
@@ -140,6 +161,8 @@ public:
                   std::placeholders::_2, std::placeholders::_3);
       hdlrs.serviceRequestHandler = std::bind(&FoxgloveBridge::serviceRequestHandler, this,
                                               std::placeholders::_1, std::placeholders::_2);
+      hdlrs.subscribeConnectionGraphHandler =
+        std::bind(&FoxgloveBridge::subscribeConnectionGraphHandler, this, std::placeholders::_1);
       _server->setHandlers(std::move(hdlrs));
 
       _handlerCallbackQueue = std::make_unique<ros::CallbackQueue>();
@@ -230,24 +253,22 @@ private:
       std::bind(&FoxgloveBridge::serviceRequest, this, request, hdl)));
   }
 
+  void subscribeConnectionGraphHandler(bool subscribe) {
+    _subscribeGraphUpdates = subscribe;
+  }
+
   void subscribe(foxglove::ChannelId channelId, ConnectionHandle clientHandle) {
     std::lock_guard<std::mutex> lock(_subscriptionsMutex);
 
-    auto it = _channelToTopicAndDatatype.find(channelId);
-    if (it == _channelToTopicAndDatatype.end()) {
+    auto it = _advertisedTopics.find(channelId);
+    if (it == _advertisedTopics.end()) {
       ROS_WARN("Received subscribe request for unknown channel %d", channelId);
       return;
     }
-    auto& topicAndDatatype = it->second;
-    auto topic = topicAndDatatype.first;
-    auto datatype = topicAndDatatype.second;
-    auto it2 = _advertisedTopics.find(topicAndDatatype);
-    if (it2 == _advertisedTopics.end()) {
-      ROS_ERROR("Channel %d for topic \"%s\" (%s) is not advertised", channelId, topic.c_str(),
-                datatype.c_str());
-      return;
-    }
-    const auto& channel = it2->second;
+
+    const auto& channel = it->second;
+    const auto& topic = channel.topic;
+    const auto& datatype = channel.schemaName;
 
     // Get client subscriptions for this channel or insert an empty map.
     auto [subscriptionsIt, firstSubscription] =
@@ -264,7 +285,7 @@ private:
       subscriptionsByClient.emplace(
         clientHandle, getMTNodeHandle().subscribe<ros_babel_fish::BabelFishMessage>(
                         topic, SUBSCRIPTION_QUEUE_LENGTH,
-                        std::bind(&FoxgloveBridge::rosMessageHandler, this, channel, clientHandle,
+                        std::bind(&FoxgloveBridge::rosMessageHandler, this, channelId, clientHandle,
                                   std::placeholders::_1)));
       if (firstSubscription) {
         ROS_INFO("Subscribed to topic \"%s\" (%s) on channel %d", topic.c_str(), datatype.c_str(),
@@ -283,17 +304,12 @@ private:
   void unsubscribe(foxglove::ChannelId channelId, ConnectionHandle clientHandle) {
     std::lock_guard<std::mutex> lock(_subscriptionsMutex);
 
-    auto it = _channelToTopicAndDatatype.find(channelId);
-    TopicAndDatatype topicAndDatatype =
-      it != _channelToTopicAndDatatype.end()
-        ? it->second
-        : std::make_pair<std::string, std::string>("[Unknown]", "[Unknown]");
-
-    auto it2 = _subscriptions.find(channelId);
-    if (it2 == _subscriptions.end()) {
+    const auto channelIt = _advertisedTopics.find(channelId);
+    if (channelIt == _advertisedTopics.end()) {
       ROS_WARN("Received unsubscribe request for unknown channel %d", channelId);
       return;
     }
+    const auto& channel = channelIt->second;
 
     auto subscriptionsIt = _subscriptions.find(channelId);
     if (subscriptionsIt == _subscriptions.end()) {
@@ -313,9 +329,9 @@ private:
 
     subscriptionsByClient.erase(clientSubscription);
     if (subscriptionsByClient.empty()) {
-      ROS_INFO("Unsubscribing from topic \"%s\" (%s) on channel %d", topicAndDatatype.first.c_str(),
-               topicAndDatatype.second.c_str(), channelId);
-      _subscriptions.erase(it2);
+      ROS_INFO("Unsubscribing from topic \"%s\" (%s) on channel %d", channel.topic.c_str(),
+               channel.schemaName.c_str(), channelId);
+      _subscriptions.erase(subscriptionsIt);
     } else {
       ROS_INFO("Removed one subscription from channel %d (%zu subscription(s) left)", channelId,
                subscriptionsByClient.size());
@@ -442,8 +458,54 @@ private:
       return;
     }
 
+    const bool servicesEnabled = hasCapability(foxglove::CAPABILITY_SERVICES);
+    const bool querySystemState = servicesEnabled || _subscribeGraphUpdates;
+
+    std::vector<std::string> serviceNames;
+    foxglove::MapOfSets publishers, subscribers, services;
+
+    // Retrieve system state from ROS master.
+    if (querySystemState) {
+      XmlRpc::XmlRpcValue params, result, payload;
+      params[0] = this->getName();
+      if (ros::master::execute("getSystemState", params, result, payload, false) &&
+          static_cast<int>(result[0]) == 1) {
+        const auto& systemState = result[2];
+        const auto& publishersXmlRpc = systemState[0];
+        const auto& subscribersXmlRpc = systemState[1];
+        const auto& servicesXmlRpc = systemState[2];
+
+        for (int i = 0; i < servicesXmlRpc.size(); ++i) {
+          const std::string& name = servicesXmlRpc[i][0];
+          if (isWhitelisted(name, _serviceWhitelistPatterns)) {
+            serviceNames.push_back(name);
+            services.emplace(name, rpcValueToStringSet(servicesXmlRpc[i][1]));
+          }
+        }
+        for (int i = 0; i < publishersXmlRpc.size(); ++i) {
+          const std::string& name = publishersXmlRpc[i][0];
+          if (isWhitelisted(name, _topicWhitelistPatterns)) {
+            publishers.emplace(name, rpcValueToStringSet(publishersXmlRpc[i][1]));
+          }
+        }
+        for (int i = 0; i < subscribersXmlRpc.size(); ++i) {
+          const std::string& name = subscribersXmlRpc[i][0];
+          if (isWhitelisted(name, _topicWhitelistPatterns)) {
+            subscribers.emplace(name, rpcValueToStringSet(subscribersXmlRpc[i][1]));
+          }
+        }
+      } else {
+        ROS_WARN("Failed to call getSystemState: %s", result.toXml().c_str());
+      }
+    }
+
     updateAdvertisedTopics();
-    updateAdvertisedServices();
+    if (servicesEnabled) {
+      updateAdvertisedServices(serviceNames);
+    }
+    if (_subscribeGraphUpdates) {
+      _server->updateConnectionGraph(publishers, subscribers, services);
+    }
 
     // Schedule the next update using truncated exponential backoff, between `MIN_UPDATE_PERIOD_MS`
     // and `_maxUpdateMs`
@@ -480,100 +542,74 @@ private:
         numIgnoredTopics);
     }
 
-    // Create a list of topics that are new to us
-    std::vector<TopicAndDatatype> newTopics;
-    for (const auto& topic : latestTopics) {
-      if (_advertisedTopics.find(topic) == _advertisedTopics.end()) {
-        newTopics.push_back(topic);
-      }
-    }
+    std::lock_guard<std::mutex> lock(_subscriptionsMutex);
 
-    // Create a list of topics that have been removed
-    std::vector<TopicAndDatatype> removedTopics;
-    for (const auto& [topic, channel] : _advertisedTopics) {
-      (void)channel;
-      if (latestTopics.find(topic) == latestTopics.end()) {
-        removedTopics.push_back(topic);
-      }
-    }
-
-    // Remove advertisements for topics that have been removed
-    {
-      std::lock_guard<std::mutex> lock(_subscriptionsMutex);
-      for (const auto& topicAndDatatype : removedTopics) {
-        auto& channel = _advertisedTopics.at(topicAndDatatype);
-
-        // Stop tracking this channel in the WebSocket server
-        _server->removeChannel(channel.id);
-
-        // Remove the subscription for this topic, if any
-        _subscriptions.erase(channel.id);
-
-        // Remove this topic+datatype tuple
-        _channelToTopicAndDatatype.erase(channel.id);
-        _advertisedTopics.erase(topicAndDatatype);
-
-        ROS_DEBUG("Removed channel %d for topic \"%s\" (%s)", channel.id,
+    // Remove channels for which the topic does not exist anymore
+    std::vector<foxglove::ChannelId> channelIdsToRemove;
+    for (auto channelIt = _advertisedTopics.begin(); channelIt != _advertisedTopics.end();) {
+      const TopicAndDatatype topicAndDatatype = {channelIt->second.topic,
+                                                 channelIt->second.schemaName};
+      if (latestTopics.find(topicAndDatatype) == latestTopics.end()) {
+        const auto channelId = channelIt->first;
+        channelIdsToRemove.push_back(channelId);
+        _subscriptions.erase(channelId);
+        ROS_DEBUG("Removed channel %d for topic \"%s\" (%s)", channelId,
                   topicAndDatatype.first.c_str(), topicAndDatatype.second.c_str());
-      }
-
-      // Advertise new topics
-      for (const auto& topicAndDatatype : newTopics) {
-        foxglove::ChannelWithoutId newChannel{};
-        newChannel.topic = topicAndDatatype.first;
-        newChannel.schemaName = topicAndDatatype.second;
-        newChannel.encoding = ROS1_CHANNEL_ENCODING;
-
-        try {
-          const auto msgDescription =
-            _rosTypeInfoProvider.getMessageDescription(topicAndDatatype.second);
-          if (msgDescription) {
-            newChannel.schema = msgDescription->message_definition;
-          } else {
-            ROS_WARN("Could not find definition for type %s", topicAndDatatype.second.c_str());
-
-            // We still advertise the channel, but with an emtpy schema
-            newChannel.schema = "";
-          }
-        } catch (const std::exception& err) {
-          ROS_WARN("Failed to add channel for topic \"%s\" (%s): %s",
-                   topicAndDatatype.first.c_str(), topicAndDatatype.second.c_str(), err.what());
-          continue;
-        }
-
-        auto channel = foxglove::Channel{_server->addChannel(newChannel), newChannel};
-        ROS_DEBUG("Advertising channel %d for topic \"%s\" (%s)", channel.id, channel.topic.c_str(),
-                  channel.schemaName.c_str());
-
-        // Add a mapping from the topic+datatype tuple to the channel, and channel ID to the
-        // topic+datatype tuple
-        _advertisedTopics.emplace(topicAndDatatype, std::move(channel));
-        _channelToTopicAndDatatype.emplace(channel.id, topicAndDatatype);
+        channelIt = _advertisedTopics.erase(channelIt);
+      } else {
+        channelIt++;
       }
     }
+    _server->removeChannels(channelIdsToRemove);
 
-    if (newTopics.size() > 0) {
-      _server->broadcastChannels();
+    // Add new channels for new topics
+    std::vector<foxglove::ChannelWithoutId> channelsToAdd;
+    for (const auto& topicAndDatatype : latestTopics) {
+      if (std::find_if(_advertisedTopics.begin(), _advertisedTopics.end(),
+                       [topicAndDatatype](const auto& channelIdAndChannel) {
+                         const auto& channel = channelIdAndChannel.second;
+                         return channel.topic == topicAndDatatype.first &&
+                                channel.schemaName == topicAndDatatype.second;
+                       }) != _advertisedTopics.end()) {
+        continue;  // Topic already advertised
+      }
+
+      foxglove::ChannelWithoutId newChannel{};
+      newChannel.topic = topicAndDatatype.first;
+      newChannel.schemaName = topicAndDatatype.second;
+      newChannel.encoding = ROS1_CHANNEL_ENCODING;
+
+      try {
+        const auto msgDescription =
+          _rosTypeInfoProvider.getMessageDescription(topicAndDatatype.second);
+        if (msgDescription) {
+          newChannel.schema = msgDescription->message_definition;
+        } else {
+          ROS_WARN("Could not find definition for type %s", topicAndDatatype.second.c_str());
+
+          // We still advertise the channel, but with an emtpy schema
+          newChannel.schema = "";
+        }
+      } catch (const std::exception& err) {
+        ROS_WARN("Failed to add channel for topic \"%s\" (%s): %s", topicAndDatatype.first.c_str(),
+                 topicAndDatatype.second.c_str(), err.what());
+        continue;
+      }
+
+      channelsToAdd.push_back(newChannel);
+    }
+
+    const auto channelIds = _server->addChannels(channelsToAdd);
+    for (size_t i = 0; i < channelsToAdd.size(); ++i) {
+      const auto channelId = channelIds[i];
+      const auto& channel = channelsToAdd[i];
+      _advertisedTopics.emplace(channelId, channel);
+      ROS_DEBUG("Advertising channel %d for topic \"%s\" (%s)", channelId, channel.topic.c_str(),
+                channel.schemaName.c_str());
     }
   }
 
-  void updateAdvertisedServices() {
-    std::vector<std::string> serviceNames;
-    XmlRpc::XmlRpcValue params, result, payload;
-    params[0] = this->getName();
-    if (ros::master::execute("getSystemState", params, result, payload, false) &&
-        static_cast<int>(result[0]) == 1) {
-      const auto& systemState = result[2];
-      const auto& services = systemState[2];
-      for (int i = 0; i < services.size(); ++i) {
-        const std::string serviceName = services[i][0];
-        serviceNames.emplace_back(serviceName);
-      }
-    } else {
-      ROS_WARN("Failed to call getSystemState: %s", result.toXml().c_str());
-      return;
-    }
-
+  void updateAdvertisedServices(const std::vector<std::string>& serviceNames) {
     std::unique_lock<std::shared_mutex> lock(_servicesMutex);
 
     // Remove advertisements for services that have been removed
@@ -774,11 +810,11 @@ private:
   }
 
   void rosMessageHandler(
-    const foxglove::Channel& channel, ConnectionHandle clientHandle,
+    const foxglove::ChannelId channelId, ConnectionHandle clientHandle,
     const ros::MessageEvent<ros_babel_fish::BabelFishMessage const>& msgEvent) {
     const auto& msg = msgEvent.getConstMessage();
     const auto receiptTimeNs = msgEvent.getReceiptTime().toNSec();
-    _server->sendMessage(clientHandle, channel.id, receiptTimeNs, msg->buffer(), msg->size());
+    _server->sendMessage(clientHandle, channelId, receiptTimeNs, msg->buffer(), msg->size());
   }
 
   void serviceRequest(const foxglove::ServiceRequest& request, ConnectionHandle clientHandle) {
@@ -822,6 +858,10 @@ private:
     }
   }
 
+  bool hasCapability(const std::string& capability) {
+    return std::find(_capabilities.begin(), _capabilities.end(), capability) != _capabilities.end();
+  }
+
   std::unique_ptr<foxglove::ServerInterface<ConnectionHandle>> _server;
   std::unique_ptr<ros::CallbackQueue> _handlerCallbackQueue;
   std::unique_ptr<ros::AsyncSpinner> _handlerSpinner;
@@ -830,8 +870,7 @@ private:
   std::vector<std::regex> _paramWhitelistPatterns;
   std::vector<std::regex> _serviceWhitelistPatterns;
   ros::XMLRPCManager xmlrpcServer;
-  std::unordered_map<TopicAndDatatype, foxglove::Channel, PairHash> _advertisedTopics;
-  std::unordered_map<foxglove::ChannelId, TopicAndDatatype> _channelToTopicAndDatatype;
+  std::unordered_map<foxglove::ChannelId, foxglove::ChannelWithoutId> _advertisedTopics;
   std::unordered_map<foxglove::ChannelId, SubscriptionsByClient> _subscriptions;
   std::unordered_map<foxglove::ServiceId, foxglove::ServiceWithoutId> _advertisedServices;
   PublicationsByClient _clientAdvertisedTopics;
@@ -843,6 +882,8 @@ private:
   size_t _updateCount = 0;
   ros::Subscriber _clockSubscription;
   bool _useSimTime = false;
+  std::vector<std::string> _capabilities;
+  std::atomic<bool> _subscribeGraphUpdates = false;
 };
 
 }  // namespace foxglove_bridge
