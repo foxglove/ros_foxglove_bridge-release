@@ -2,8 +2,10 @@
 
 #include <functional>
 #include <optional>
+#include <regex>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "common.hpp"
@@ -12,6 +14,8 @@
 namespace foxglove {
 
 constexpr size_t DEFAULT_SEND_BUFFER_LIMIT_BYTES = 10000000UL;  // 10 MB
+
+using MapOfSets = std::unordered_map<std::string, std::unordered_set<std::string>>;
 
 struct ServerOptions {
   std::vector<std::string> capabilities;
@@ -23,6 +27,7 @@ struct ServerOptions {
   std::string keyfile = "";
   std::string sessionId;
   bool useCompression = false;
+  std::vector<std::regex> clientTopicWhitelistPatterns;
 };
 
 template <typename ConnectionHandle>
@@ -42,6 +47,7 @@ struct ServerHandlers {
                      ConnectionHandle)>
     parameterSubscriptionHandler;
   std::function<void(const ServiceRequest&, ConnectionHandle)> serviceRequestHandler;
+  std::function<void(bool)> subscribeConnectionGraphHandler;
 };
 
 template <typename ConnectionHandle>
@@ -51,9 +57,8 @@ public:
   virtual void start(const std::string& host, uint16_t port) = 0;
   virtual void stop() = 0;
 
-  virtual ChannelId addChannel(ChannelWithoutId channel) = 0;
-  virtual void removeChannel(ChannelId chanId) = 0;
-  virtual void broadcastChannels() = 0;
+  virtual std::vector<ChannelId> addChannels(const std::vector<ChannelWithoutId>& channels) = 0;
+  virtual void removeChannels(const std::vector<ChannelId>& channelIds) = 0;
   virtual void publishParameterValues(ConnectionHandle clientHandle,
                                       const std::vector<Parameter>& parameters,
                                       const std::optional<std::string>& requestId) = 0;
@@ -68,6 +73,9 @@ public:
   virtual void broadcastTime(uint64_t timestamp) = 0;
   virtual void sendServiceResponse(ConnectionHandle clientHandle,
                                    const ServiceResponse& response) = 0;
+  virtual void updateConnectionGraph(const MapOfSets& publishedTopics,
+                                     const MapOfSets& subscribedTopics,
+                                     const MapOfSets& advertisedServices) = 0;
 
   virtual uint16_t getPort() = 0;
   virtual std::string remoteEndpointString(ConnectionHandle clientHandle) = 0;

@@ -1,6 +1,8 @@
 #pragma once
 
+#include <array>
 #include <cstring>
+#include <optional>
 #include <stdint.h>
 #include <string>
 #include <vector>
@@ -13,6 +15,12 @@ constexpr char CAPABILITY_TIME[] = "time";
 constexpr char CAPABILITY_PARAMETERS[] = "parameters";
 constexpr char CAPABILITY_PARAMETERS_SUBSCRIBE[] = "parametersSubscribe";
 constexpr char CAPABILITY_SERVICES[] = "services";
+constexpr char CAPABILITY_CONNECTION_GRAPH[] = "connectionGraph";
+
+constexpr std::array<const char*, 5> DEFAULT_CAPABILITIES = {
+  CAPABILITY_CLIENT_PUBLISH, CAPABILITY_CONNECTION_GRAPH, CAPABILITY_PARAMETERS_SUBSCRIBE,
+  CAPABILITY_PARAMETERS,     CAPABILITY_SERVICES,
+};
 
 using ChannelId = uint32_t;
 using ClientChannelId = uint32_t;
@@ -43,10 +51,11 @@ struct ChannelWithoutId {
   std::string encoding;
   std::string schemaName;
   std::string schema;
+  std::optional<std::string> schemaEncoding;
 
   bool operator==(const ChannelWithoutId& other) const {
     return topic == other.topic && encoding == other.encoding && schemaName == other.schemaName &&
-           schema == other.schema;
+           schema == other.schema && schemaEncoding == other.schemaEncoding;
   }
 };
 
