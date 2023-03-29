@@ -9,16 +9,19 @@ if(POLICY CMP0024)
   set(CMAKE_POLICY_DEFAULT_CMP0024 NEW)
 endif()
 
-project(foxglove_bridge LANGUAGES CXX VERSION 0.5.1)
+project(foxglove_bridge LANGUAGES CXX VERSION 0.5.2)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 macro(enable_strict_compiler_warnings target)
-  target_compile_options(${target} PRIVATE
-    $<$<CXX_COMPILER_ID:MSVC>:/WX /W4>
-    $<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-Wall -Wextra -Wpedantic -Werror -Wold-style-cast -Wfloat-equal>
-  )
+  if (MSVC)
+    target_compile_options(${target} PRIVATE /WX /W4)
+  elseif(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+    target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic -Werror -Wold-style-cast -Wfloat-equal -Wmost -Wunused-exception-parameter)
+  else()
+    target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic -Werror -Wold-style-cast -Wfloat-equal)
+  endif()
 endmacro()
 
 find_package(nlohmann_json QUIET)
@@ -40,6 +43,7 @@ endif()
 
 # Build the foxglove_bridge_base library
 add_library(foxglove_bridge_base SHARED
+  foxglove_bridge_base/src/base64.cpp
   foxglove_bridge_base/src/foxglove_bridge.cpp
   foxglove_bridge_base/src/parameter.cpp
   foxglove_bridge_base/src/serialization.cpp
@@ -166,6 +170,10 @@ if(ROS_BUILD_TYPE STREQUAL "catkin")
     target_link_libraries(serialization_test foxglove_bridge_base)
     enable_strict_compiler_warnings(foxglove_bridge)
 
+    catkin_add_gtest(base64_test foxglove_bridge_base/tests/base64_test.cpp)
+    target_link_libraries(base64_test foxglove_bridge_base)
+    enable_strict_compiler_warnings(foxglove_bridge)
+
     add_rostest_gtest(smoke_test ros1_foxglove_bridge/tests/smoke.test ros1_foxglove_bridge/tests/smoke_test.cpp)
     target_include_directories(smoke_test SYSTEM PRIVATE
       $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/foxglove_bridge_base/include>
@@ -190,6 +198,10 @@ elseif(ROS_BUILD_TYPE STREQUAL "ament_cmake")
     ament_add_gtest(serialization_test foxglove_bridge_base/tests/serialization_test.cpp)
     target_link_libraries(serialization_test foxglove_bridge_base)
     enable_strict_compiler_warnings(serialization_test)
+
+    ament_add_gtest(base64_test foxglove_bridge_base/tests/base64_test.cpp)
+    target_link_libraries(base64_test foxglove_bridge_base)
+    enable_strict_compiler_warnings(base64_test)
 
     ament_add_gtest(smoke_test ros2_foxglove_bridge/tests/smoke_test.cpp)
     ament_target_dependencies(smoke_test rclcpp rclcpp_components std_msgs std_srvs)
