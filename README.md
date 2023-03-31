@@ -1,3 +1,26 @@
+## foxglove_bridge (noetic) - 0.5.3-1
+
+The packages in the `foxglove_bridge` repository were released into the `noetic` distro by running `/usr/local/bin/bloom-release foxglove_bridge --rosdistro noetic --no-pull-request` on `Fri, 31 Mar 2023 15:43:54 -0000`
+
+The `foxglove_bridge` package was released.
+
+Version of package(s) in repository `foxglove_bridge`:
+
+- upstream repository: https://github.com/foxglove/ros-foxglove-bridge.git
+- release repository: https://github.com/foxglove/ros_foxglove_bridge-release.git
+- rosdistro version: `0.5.2-1`
+- old version: `0.5.2-1`
+- new version: `0.5.3-1`
+
+Versions of tools used:
+
+- bloom version: `0.11.2`
+- catkin_pkg version: `0.5.2`
+- rosdep version: `0.22.2`
+- rosdistro version: `0.9.0`
+- vcstools version: `0.1.42`
+
+
 ## foxglove_bridge (melodic) - 0.5.3-1
 
 The packages in the `foxglove_bridge` repository were released into the `melodic` distro by running `/usr/local/bin/bloom-release foxglove_bridge --rosdistro melodic --no-pull-request` on `Fri, 31 Mar 2023 15:41:28 -0000`
