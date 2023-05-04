@@ -9,7 +9,7 @@ if(POLICY CMP0024)
   set(CMAKE_POLICY_DEFAULT_CMP0024 NEW)
 endif()
 
-project(foxglove_bridge LANGUAGES CXX VERSION 0.5.3)
+project(foxglove_bridge LANGUAGES CXX VERSION 0.6.0)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -41,6 +41,20 @@ if (ENDIAN)
   add_compile_definitions(ARCH_IS_BIG_ENDIAN=1)
 endif()
 
+# Get git commit hash and replace variables in version.cpp.in
+find_program(GIT_SCM git DOC "Git version control")
+if (GIT_SCM)
+  execute_process(
+    COMMAND ${GIT_SCM} describe --always --dirty --exclude="*"
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    OUTPUT_VARIABLE FOXGLOVE_BRIDGE_GIT_HASH
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+  )
+endif()
+set(FOXGLOVE_BRIDGE_VERSION "${CMAKE_PROJECT_VERSION}")
+configure_file(foxglove_bridge_base/src/version.cpp.in
+               foxglove_bridge_base/src/version.cpp @ONLY)
+
 # Build the foxglove_bridge_base library
 add_library(foxglove_bridge_base SHARED
   foxglove_bridge_base/src/base64.cpp
@@ -49,6 +63,8 @@ add_library(foxglove_bridge_base SHARED
   foxglove_bridge_base/src/serialization.cpp
   foxglove_bridge_base/src/server_factory.cpp
   foxglove_bridge_base/src/test/test_client.cpp
+  # Generated:
+  ${CMAKE_CURRENT_BINARY_DIR}/foxglove_bridge_base/src/version.cpp
 )
 target_include_directories(foxglove_bridge_base
   PUBLIC
