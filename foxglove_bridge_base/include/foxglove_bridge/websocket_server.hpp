@@ -539,7 +539,7 @@ inline void Server<ServerConfiguration>::sendStatusAndLogMsg(ConnHandle clientHa
   const std::string endpoint = remoteEndpointString(clientHandle);
   const std::string logMessage = endpoint + ": " + message;
   const auto logLevel = StatusLevelToLogLevel(level);
-  auto logger = level == StatusLevel::Error ? _server.get_elog() : _server.get_alog();
+  auto logger = level == StatusLevel::Info ? _server.get_alog() : _server.get_elog();
   logger.write(logLevel, logMessage);
 
   sendJson(clientHandle, json{
@@ -1291,10 +1291,14 @@ inline void Server<ServerConfiguration>::updateConnectionGraph(
   }
 
   std::vector<std::string> removedTopics, removedServices;
-  std::set_difference(knownTopicNames.begin(), knownTopicNames.end(), topicNames.begin(),
-                      topicNames.end(), std::back_inserter(removedTopics));
-  std::set_difference(knownServiceNames.begin(), knownServiceNames.end(), serviceNames.begin(),
-                      serviceNames.end(), std::back_inserter(removedServices));
+  std::copy_if(knownTopicNames.begin(), knownTopicNames.end(), std::back_inserter(removedTopics),
+               [&topicNames](const std::string& topic) {
+                 return topicNames.find(topic) == topicNames.end();
+               });
+  std::copy_if(knownServiceNames.begin(), knownServiceNames.end(),
+               std::back_inserter(removedServices), [&serviceNames](const std::string& service) {
+                 return serviceNames.find(service) == serviceNames.end();
+               });
 
   if (publisherDiff.empty() && subscriberDiff.empty() && servicesDiff.empty() &&
       removedTopics.empty() && removedServices.empty()) {
