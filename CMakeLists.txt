@@ -9,7 +9,7 @@ if(POLICY CMP0024)
   set(CMAKE_POLICY_DEFAULT_CMP0024 NEW)
 endif()
 
-project(foxglove_bridge LANGUAGES CXX VERSION 0.6.2)
+project(foxglove_bridge LANGUAGES CXX VERSION 0.6.3)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -244,6 +244,9 @@ if(ROS_BUILD_TYPE STREQUAL "catkin")
       DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/launch
     )
 elseif(ROS_BUILD_TYPE STREQUAL "ament_cmake")
+    install(FILES ros2_foxglove_bridge/include/foxglove_bridge/ros2_foxglove_bridge.hpp
+      DESTINATION include/${PROJECT_NAME}/
+    )
     install(TARGETS foxglove_bridge
       DESTINATION lib/${PROJECT_NAME}
     )
