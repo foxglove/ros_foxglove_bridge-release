@@ -1,5 +1,7 @@
 #include <unordered_set>
 
+#include <resource_retriever/retriever.hpp>
+
 #include <foxglove_bridge/ros2_foxglove_bridge.hpp>
 
 namespace foxglove_bridge {
@@ -47,8 +49,13 @@ FoxgloveBridge::FoxgloveBridge(const rclcpp::NodeOptions& options)
     this->get_parameter(PARAM_CLIENT_TOPIC_WHITELIST).as_string_array();
   const auto clientTopicWhiteListPatterns = parseRegexStrings(this, clientTopicWhiteList);
   _includeHidden = this->get_parameter(PARAM_INCLUDE_HIDDEN).as_bool();
+  const auto assetUriAllowlist = this->get_parameter(PARAM_ASSET_URI_ALLOWLIST).as_string_array();
+  _assetUriAllowlistPatterns = parseRegexStrings(this, assetUriAllowlist);
 
   const auto logHandler = std::bind(&FoxgloveBridge::logHandler, this, _1, _2);
+  // Fetching of assets may be blocking, hence we fetch them in a separate thread.
+  _fetchAssetQueue = std::make_unique<foxglove::CallbackQueue>(logHandler, 1 /* num_threads */);
+
   foxglove::ServerOptions serverOptions;
   serverOptions.capabilities = _capabilities;
   if (_useSimTime) {
@@ -86,6 +93,14 @@ FoxgloveBridge::FoxgloveBridge(const rclcpp::NodeOptions& options)
 
     _paramInterface = std::make_shared<ParameterInterface>(this, paramWhitelistPatterns);
     _paramInterface->setParamUpdateCallback(std::bind(&FoxgloveBridge::parameterUpdates, this, _1));
+  }
+
+  if (hasCapability(foxglove::CAPABILITY_ASSETS)) {
+    hdlrs.fetchAssetHandler = [this](const std::string& uri, uint32_t requestId,
+                                     ConnectionHandle hdl) {
+      _fetchAssetQueue->addCallback(
+        std::bind(&FoxgloveBridge::fetchAsset, this, uri, requestId, hdl));
+    };
   }
 
   _server->setHandlers(std::move(hdlrs));
@@ -457,10 +472,27 @@ void FoxgloveBridge::subscribe(foxglove::ChannelId channelId, ConnectionHandle c
     if (qos.durability() == rclcpp::DurabilityPolicy::TransientLocal) {
       ++durabilityTransientLocalEndpointsCount;
     }
-    depth = std::min(_maxQosDepth, depth + qos.depth());
+    // Some RMWs do not retrieve history information of the publisher endpoint in which case the
+    // history depth is 0. We use a lower limit of 1 here, so that the history depth is at least
+    // equal to the number of publishers. This covers the case where there are multiple
+    // transient_local publishers with a depth of 1 (e.g. multiple tf_static transform
+    // broadcasters). See also
+    // https://github.com/foxglove/ros-foxglove-bridge/issues/238 and
+    // https://github.com/foxglove/ros-foxglove-bridge/issues/208
+    const size_t publisherHistoryDepth = std::max(1ul, qos.depth());
+    depth = depth + publisherHistoryDepth;
   }
 
-  rclcpp::QoS qos{rclcpp::KeepLast(std::max(depth, _minQosDepth))};
+  depth = std::max(depth, _minQosDepth);
+  if (depth > _maxQosDepth) {
+    RCLCPP_WARN(this->get_logger(),
+                "Limiting history depth for topic '%s' to %zu (was %zu). You may want to increase "
+                "the max_qos_depth parameter value.",
+                topic.c_str(), _maxQosDepth, depth);
+    depth = _maxQosDepth;
+  }
+
+  rclcpp::QoS qos{rclcpp::KeepLast(depth)};
 
   // If all endpoints are reliable, ask for reliable
   if (reliabilityReliableEndpointsCount == publisherInfo.size()) {
@@ -795,6 +827,38 @@ void FoxgloveBridge::serviceRequest(const foxglove::ServiceRequest& request,
     _server->sendServiceResponse(clientHandle, response);
   };
   client->async_send_request(reqMessage, responseReceivedCallback);
+}
+
+void FoxgloveBridge::fetchAsset(const std::string& uri, uint32_t requestId,
+                                ConnectionHandle clientHandle) {
+  foxglove::FetchAssetResponse response;
+  response.requestId = requestId;
+
+  try {
+    // We reject URIs that are not on the allowlist or that contain two consecutive dots. The latter
+    // can be utilized to construct URIs for retrieving confidential files that should not be
+    // accessible over the WebSocket connection. Example:
+    // `package://<pkg_name>/../../../secret.txt`. This is an extra security measure and should not
+    // be necessary if the allowlist is strict enough.
+    if (uri.find("..") != std::string::npos || !isWhitelisted(uri, _assetUriAllowlistPatterns)) {
+      throw std::runtime_error("Asset URI not allowed: " + uri);
+    }
+
+    resource_retriever::Retriever resource_retriever;
+    const resource_retriever::MemoryResource memoryResource = resource_retriever.get(uri);
+    response.status = foxglove::FetchAssetStatus::Success;
+    response.errorMessage = "";
+    response.data.resize(memoryResource.size);
+    std::memcpy(response.data.data(), memoryResource.data.get(), memoryResource.size);
+  } catch (const std::exception& ex) {
+    RCLCPP_WARN(this->get_logger(), "Failed to retrieve asset '%s': %s", uri.c_str(), ex.what());
+    response.status = foxglove::FetchAssetStatus::Error;
+    response.errorMessage = "Failed to retrieve asset " + uri;
+  }
+
+  if (_server) {
+    _server->sendFetchAssetResponse(clientHandle, response);
+  }
 }
 
 bool FoxgloveBridge::hasCapability(const std::string& capability) {

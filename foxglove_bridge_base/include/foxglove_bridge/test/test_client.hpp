@@ -22,6 +22,11 @@ std::future<ServiceResponse> waitForServiceResponse(std::shared_ptr<ClientInterf
 std::future<Service> waitForService(std::shared_ptr<ClientInterface> client,
                                     const std::string& serviceName);
 
+std::future<Channel> waitForChannel(std::shared_ptr<ClientInterface> client,
+                                    const std::string& topicName);
+
+std::future<FetchAssetResponse> waitForFetchAssetResponse(std::shared_ptr<ClientInterface> client);
+
 extern template class Client<websocketpp::config::asio_client>;
 
 }  // namespace foxglove
