@@ -1,0 +1,211 @@
+ros-noetic-foxglove-bridge (0.7.2-1focal) focal; urgency=high
+
+  * Fix invalid pointers not being caught (#265 <https://github.com/foxglove/ros-foxglove-bridge/issues/265>)
+  * Make ROS1 service type retrieval more robust (#263 <https://github.com/foxglove/ros-foxglove-bridge/issues/263>)
+  * Contributors: Hans-Joachim Krauch
+
+ -- John Hurliman <john@foxglove.dev>  Tue, 12 Sep 2023 00:00:00 -0000
+
+ros-noetic-foxglove-bridge (0.7.1-1focal) focal; urgency=high
+
+  * Communicate double / double array parameters with type info, explicitly cast when set from integer (#256 <https://github.com/foxglove/ros-foxglove-bridge/issues/256>)
+  * Make ROS 2 smoke tests less flaky (#260 <https://github.com/foxglove/ros-foxglove-bridge/issues/260>)
+  * Add debug config for ros2 smoke test (#257 <https://github.com/foxglove/ros-foxglove-bridge/issues/257>)
+  * Handle client disconnection in message handler thread (#259 <https://github.com/foxglove/ros-foxglove-bridge/issues/259>)
+  * Reduce smoke test flakiness (#258 <https://github.com/foxglove/ros-foxglove-bridge/issues/258>)
+  * Server code improvements (#250 <https://github.com/foxglove/ros-foxglove-bridge/issues/250>)
+  * Contributors: Hans-Joachim Krauch
+
+ -- John Hurliman <john@foxglove.dev>  Mon, 21 Aug 2023 00:00:00 -0000
+
+ros-noetic-foxglove-bridge (0.7.0-1focal) focal; urgency=high
+
+  * Fix ROS2 launch file install rule not installing launch subfolder (#243 <https://github.com/foxglove/ros-foxglove-bridge/issues/243>)
+  * Support building with boost asio (#247 <https://github.com/foxglove/ros-foxglove-bridge/issues/247>)
+  * Avoid usage of tmpnam() for creating random filename (#246 <https://github.com/foxglove/ros-foxglove-bridge/issues/246>)
+  * Implement ws-protocol's fetchAsset specification (#232 <https://github.com/foxglove/ros-foxglove-bridge/issues/232>)
+  * Use --include-eol-distros for rosdep to fix melodic builds (#244 <https://github.com/foxglove/ros-foxglove-bridge/issues/244>)
+  * Reduce logging severity for parameter retrieval logs (#240 <https://github.com/foxglove/ros-foxglove-bridge/issues/240>)
+  * Contributors: Hans-Joachim Krauch, Micah Guttman
+
+ -- John Hurliman <john@foxglove.dev>  Wed, 12 Jul 2023 00:00:00 -0000
+
+ros-noetic-foxglove-bridge (0.6.4-1focal) focal; urgency=high
+
+  * Assume publisher qos depth of 1 if the middleware reports the qos history as unknown (#239 <https://github.com/foxglove/ros-foxglove-bridge/issues/239>)
+  * devcontainer: Use --include-eol-distros for rosdep update (#237 <https://github.com/foxglove/ros-foxglove-bridge/issues/237>)
+  * Contributors: Hans-Joachim Krauch
+
+ -- John Hurliman <john@foxglove.dev>  Wed, 05 Jul 2023 00:00:00 -0000
+
+ros-noetic-foxglove-bridge (0.6.3-1focal) focal; urgency=high
+
+  * Add iron build to CI (#234 <https://github.com/foxglove/ros-foxglove-bridge/issues/234>)
+  * Fix QoS history being unknown when copied from existing publisher (#233 <https://github.com/foxglove/ros-foxglove-bridge/issues/233>)
+  * Extract ROS 2 bridge header (#228 <https://github.com/foxglove/ros-foxglove-bridge/issues/228>)
+  * Contributors: Hans-Joachim Krauch, Milan Vukov
+
+ -- John Hurliman <john@foxglove.dev>  Fri, 16 Jun 2023 00:00:00 -0000
+
+ros-noetic-foxglove-bridge (0.6.2-1focal) focal; urgency=high
+
+  * Fix connection graph updates to due incorrect use of std::set_difference (#226 <https://github.com/foxglove/ros-foxglove-bridge/issues/226>)
+  * Contributors: Ivan Nenakhov
+
+ -- John Hurliman <john@foxglove.dev>  Thu, 11 May 2023 00:00:00 -0000
+
+ros-noetic-foxglove-bridge (0.6.1-1focal) focal; urgency=high
+
+  * Fix warning messages not being logged (#224 <https://github.com/foxglove/ros-foxglove-bridge/issues/224>)
+  * Contributors: Hans-Joachim Krauch
+
+ -- John Hurliman <john@foxglove.dev>  Fri, 05 May 2023 00:00:00 -0000
+
+ros-noetic-foxglove-bridge (0.6.0-1focal) focal; urgency=high
+
+  * Add support for nested parameters (ROS1) (#221 <https://github.com/foxglove/ros-foxglove-bridge/issues/221>)
+  * Catch exceptions thrown in handler functions, send status to client (#210 <https://github.com/foxglove/ros-foxglove-bridge/issues/210>)
+  * Fix unhandled xmlrpc exception (#218 <https://github.com/foxglove/ros-foxglove-bridge/issues/218>)
+  * Add support for action topic and services (ROS2) (#214 <https://github.com/foxglove/ros-foxglove-bridge/issues/214>)
+  * Add parameter to include hidden topics and services (ROS 2) (#216 <https://github.com/foxglove/ros-foxglove-bridge/issues/216>)
+  * Add workaround for publishers not being cleaned up after they got destroyed (#215 <https://github.com/foxglove/ros-foxglove-bridge/issues/215>)
+  * Fix error when compiling with C++20 (#212 <https://github.com/foxglove/ros-foxglove-bridge/issues/212>)
+  * Devcontainer improvements (#213 <https://github.com/foxglove/ros-foxglove-bridge/issues/213>)
+  * Add parameter for minimum subscription QoS depth (#211 <https://github.com/foxglove/ros-foxglove-bridge/issues/211>)
+  * Log version and commit hash when node is started (#209 <https://github.com/foxglove/ros-foxglove-bridge/issues/209>)
+  * Contributors: Hans-Joachim Krauch
+
+ -- John Hurliman <john@foxglove.dev>  Thu, 04 May 2023 00:00:00 -0000
+
+ros-noetic-foxglove-bridge (0.5.3-1focal) focal; urgency=high
+
+  * Fix publishers being created with invalid QoS profile (#205 <https://github.com/foxglove/ros-foxglove-bridge/issues/205>)
+  * Contributors: Hans-Joachim Krauch
+
+ -- John Hurliman <john@foxglove.dev>  Fri, 31 Mar 2023 00:00:00 -0000
+
+ros-noetic-foxglove-bridge (0.5.2-1focal) focal; urgency=high
+
+  * Notify client when Server's send buffer limit has been reached (#201 <https://github.com/foxglove/ros-foxglove-bridge/issues/201>)
+  * Add support for byte array params (#199 <https://github.com/foxglove/ros-foxglove-bridge/issues/199>)
+  * Do not allow connection output buffer to exceed configured limit (#196 <https://github.com/foxglove/ros-foxglove-bridge/issues/196>)
+  * Fix exception parameter not being used (#194 <https://github.com/foxglove/ros-foxglove-bridge/issues/194>)
+  * Contributors: Hans-Joachim Krauch
+
+ -- John Hurliman <john@foxglove.dev>  Wed, 29 Mar 2023 00:00:00 -0000
+
+ros-noetic-foxglove-bridge (0.5.1-1focal) focal; urgency=high
+
+  * Add more exception handling (#191 <https://github.com/foxglove/ros-foxglove-bridge/issues/191>)
+  * [ROS1] Fix exception not being caught when retrieving service type  (#190 <https://github.com/foxglove/ros-foxglove-bridge/issues/190>)
+  * Devcontainer: Use catkin tools, add build commands for ros1 (#188 <https://github.com/foxglove/ros-foxglove-bridge/issues/188>)
+  * Contributors: Hans-Joachim Krauch
+
+ -- John Hurliman <john@foxglove.dev>  Thu, 09 Mar 2023 00:00:00 -0000
+
+ros-noetic-foxglove-bridge (0.5.0-1focal) focal; urgency=high
+
+  * Add support for schemaEncoding field (#186 <https://github.com/foxglove/ros-foxglove-bridge/issues/186>)
+  * Use QoS profile of existing publishers (if available) when creating new publishers (#184 <https://github.com/foxglove/ros-foxglove-bridge/issues/184>)
+  * Make server more independent of given server configurations (#185 <https://github.com/foxglove/ros-foxglove-bridge/issues/185>)
+  * Add parameter client_topic_whitelist for whitelisting client-published topics (#181 <https://github.com/foxglove/ros-foxglove-bridge/issues/181>)
+  * Make server capabilities configurable (#182 <https://github.com/foxglove/ros-foxglove-bridge/issues/182>)
+  * Fix action topic log spam (#179 <https://github.com/foxglove/ros-foxglove-bridge/issues/179>)
+  * Remove (clang specific) compiler flag -Wmost (#177 <https://github.com/foxglove/ros-foxglove-bridge/issues/177>)
+  * Improve the way compiler flags are set, use clang as default compiler (#175 <https://github.com/foxglove/ros-foxglove-bridge/issues/175>)
+  * Avoid re-advertising existing channels when advertising new channels (#172 <https://github.com/foxglove/ros-foxglove-bridge/issues/172>)
+  * Allow subscribing to connection graph updates (#167 <https://github.com/foxglove/ros-foxglove-bridge/issues/167>)
+  * Contributors: Hans-Joachim Krauch
+
+ -- John Hurliman <john@foxglove.dev>  Wed, 08 Mar 2023 00:00:00 -0000
+
+ros-noetic-foxglove-bridge (0.4.1-1focal) focal; urgency=high
+
+  * Run client handler functions in separate thread (#165 <https://github.com/foxglove/ros-foxglove-bridge/issues/165>)
+  * Fix compilation error due to mismatched new-delete (#163 <https://github.com/foxglove/ros-foxglove-bridge/issues/163>)
+  * Decouple server implementation (#156 <https://github.com/foxglove/ros-foxglove-bridge/issues/156>)
+  * ROS2 parameter fixes (#169 <https://github.com/foxglove/ros-foxglove-bridge/issues/169>)
+  * Fix program crash due to unhandled exception when creating publisher with invalid topic name (#168 <https://github.com/foxglove/ros-foxglove-bridge/issues/168>)
+  * Contributors: Hans-Joachim Krauch
+
+ -- John Hurliman <john@foxglove.dev>  Fri, 17 Feb 2023 00:00:00 -0000
+
+ros-noetic-foxglove-bridge (0.4.0-1focal) focal; urgency=high
+
+  * Update README with suggestion to build from source, minor fixes
+  * Do not build docker images, remove corresponding documentation (#159 <https://github.com/foxglove/ros-foxglove-bridge/issues/159>)
+  * Add option to use permessage-deflate compression (#152 <https://github.com/foxglove/ros-foxglove-bridge/issues/152>)
+  * Improve launch file documentation, add missing launch file arguments (#158 <https://github.com/foxglove/ros-foxglove-bridge/issues/158>)
+  * Allow unsetting (deleting) parameters (#145 <https://github.com/foxglove/ros-foxglove-bridge/issues/145>)
+  * Improve mutex usage (#154 <https://github.com/foxglove/ros-foxglove-bridge/issues/154>)
+  * Add sessionId to serverInfo (#153 <https://github.com/foxglove/ros-foxglove-bridge/issues/153>)
+  * Performance improvements (#151 <https://github.com/foxglove/ros-foxglove-bridge/issues/151>)
+  * Add ROS2 support for calling server-advertised services (#142 <https://github.com/foxglove/ros-foxglove-bridge/issues/142>)
+  * Add ROS1 support for calling server-advertised services (#136 <https://github.com/foxglove/ros-foxglove-bridge/issues/136>)
+  * ROS2 smoke test: Increase default timeout 8->10 seconds (#143 <https://github.com/foxglove/ros-foxglove-bridge/issues/143>)
+  * Fix flaky parameter test (noetic) (#141 <https://github.com/foxglove/ros-foxglove-bridge/issues/141>)
+  * Always --pull when building docker images in the makefile (#140 <https://github.com/foxglove/ros-foxglove-bridge/issues/140>)
+  * Fix failed tests not causing CI to fail (#138 <https://github.com/foxglove/ros-foxglove-bridge/issues/138>)
+  * Fix setting int / int[] parameters not working (ROS 1) (#135 <https://github.com/foxglove/ros-foxglove-bridge/issues/135>)
+  * Send ROS_DISTRO to clients via metadata field (#134 <https://github.com/foxglove/ros-foxglove-bridge/issues/134>)
+  * Communicate supported encodings for client-side publishing (#131 <https://github.com/foxglove/ros-foxglove-bridge/issues/131>)
+  * Fix client advertised channels not being updated on unadvertise (#132 <https://github.com/foxglove/ros-foxglove-bridge/issues/132>)
+  * Add support for optional request id for setParameter operation (#133 <https://github.com/foxglove/ros-foxglove-bridge/issues/133>)
+  * Fix exception when setting parameter to empty array (#130 <https://github.com/foxglove/ros-foxglove-bridge/issues/130>)
+  * Fix wrong parameter field names being used (#129 <https://github.com/foxglove/ros-foxglove-bridge/issues/129>)
+  * Add parameter support (#112 <https://github.com/foxglove/ros-foxglove-bridge/issues/112>)
+  * Add throttled logging when send buffer is full (#128 <https://github.com/foxglove/ros-foxglove-bridge/issues/128>)
+  * Contributors: Hans-Joachim Krauch, John Hurliman
+
+ -- John Hurliman <john@foxglove.dev>  Wed, 15 Feb 2023 00:00:00 -0000
+
+ros-noetic-foxglove-bridge (0.3.0-1focal) focal; urgency=high
+
+  * Add launch files, add install instructions to README (#125 <https://github.com/foxglove/ros-foxglove-bridge/issues/125>)
+  * Drop messages when connection send buffer limit has been reached (#126 <https://github.com/foxglove/ros-foxglove-bridge/issues/126>)
+  * Remove references to galactic support from README (#117 <https://github.com/foxglove/ros-foxglove-bridge/issues/117>)
+  * Add missing build instructions (#123 <https://github.com/foxglove/ros-foxglove-bridge/issues/123>)
+  * Use a single reentrant callback group for all subscriptions (#122 <https://github.com/foxglove/ros-foxglove-bridge/issues/122>)
+  * Fix clang compilation errors (#119 <https://github.com/foxglove/ros-foxglove-bridge/issues/119>)
+  * Publish binary time data when use_sim_time parameter is true (#114 <https://github.com/foxglove/ros-foxglove-bridge/issues/114>)
+  * Optimize Dockerfiles (#110 <https://github.com/foxglove/ros-foxglove-bridge/issues/110>)
+  * Contributors: Hans-Joachim Krauch, Ruffin
+
+ -- John Hurliman <john@foxglove.dev>  Wed, 04 Jan 2023 00:00:00 -0000
+
+ros-noetic-foxglove-bridge (0.2.2-1focal) focal; urgency=high
+
+  * Fix messages not being received anymore after unadvertising a client publication (#109 <https://github.com/foxglove/ros-foxglove-bridge/issues/109>)
+  * Allow to whitelist topics via a ROS paramater (#108 <https://github.com/foxglove/ros-foxglove-bridge/issues/108>)
+  * Contributors: Hans-Joachim Krauch
+
+ -- John Hurliman <john@foxglove.dev>  Mon, 12 Dec 2022 00:00:00 -0000
+
+ros-noetic-foxglove-bridge (0.2.1-1focal) focal; urgency=high
+
+  * Fix compilation on platforms where size_t is defined as unsigned int
+  * Contributors: Hans-Joachim Krauch
+
+ -- John Hurliman <john@foxglove.dev>  Mon, 05 Dec 2022 00:00:00 -0000
+
+ros-noetic-foxglove-bridge (0.2.0-1focal) focal; urgency=high
+
+  * Add support for client channels (#66 <https://github.com/foxglove/ros-foxglove-bridge/issues/66>)
+  * Add smoke tests (#72 <https://github.com/foxglove/ros-foxglove-bridge/issues/72>)
+  * Update package maintainers (#70 <https://github.com/foxglove/ros-foxglove-bridge/issues/70>)
+  * [ROS2]: Fix messages not being received anymore after unsubscribing a topic (#92 <https://github.com/foxglove/ros-foxglove-bridge/issues/92>)
+  * [ROS2]: Refactor node as a component (#63 <https://github.com/foxglove/ros-foxglove-bridge/issues/63>)
+  * [ROS2]: Fix message definition loading for .msg or .idl files not located in msg/ (#95 <https://github.com/foxglove/ros-foxglove-bridge/issues/95>)
+  * [ROS1]: Mirror ROS 2 node behavior when /clock` topic is present (#99 <https://github.com/foxglove/ros-foxglove-bridge/issues/99>)
+  * [ROS1]: Fix topic discovery function not being called frequently at startup (#68 <https://github.com/foxglove/ros-foxglove-bridge/issues/68>)
+  * Contributors: Hans-Joachim Krauch, Jacob Bandes-Storch, John Hurliman
+
+ -- John Hurliman <john@foxglove.dev>  Thu, 01 Dec 2022 00:00:00 -0000
+
+ros-noetic-foxglove-bridge (0.1.0-1focal) focal; urgency=high
+
+  * Initial release, topic subscription only
+
+ -- Foxglove <contact@foxglove.dev>  Mon, 21 Nov 2022 00:00:00 -0000
+
+
