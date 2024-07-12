@@ -51,6 +51,7 @@ FoxgloveBridge::FoxgloveBridge(const rclcpp::NodeOptions& options)
   _includeHidden = this->get_parameter(PARAM_INCLUDE_HIDDEN).as_bool();
   const auto assetUriAllowlist = this->get_parameter(PARAM_ASSET_URI_ALLOWLIST).as_string_array();
   _assetUriAllowlistPatterns = parseRegexStrings(this, assetUriAllowlist);
+  _disableLoanMessage = this->get_parameter(PARAM_DISABLE_LOAN_MESSAGE).as_bool();
 
   const auto logHandler = std::bind(&FoxgloveBridge::logHandler, this, _1, _2);
   // Fetching of assets may be blocking, hence we fetch them in a separate thread.
@@ -126,7 +127,7 @@ FoxgloveBridge::FoxgloveBridge(const rclcpp::NodeOptions& options)
   if (_useSimTime) {
     _clockSubscription = this->create_subscription<rosgraph_msgs::msg::Clock>(
       "/clock", rclcpp::QoS{rclcpp::KeepLast(1)}.best_effort(),
-      [&](std::shared_ptr<rosgraph_msgs::msg::Clock> msg) {
+      [&](std::shared_ptr<const rosgraph_msgs::msg::Clock> msg) {
         const auto timestamp = rclcpp::Time{msg->clock}.nanoseconds();
         assert(timestamp >= 0 && "Timestamp is negative");
         _server->broadcastTime(static_cast<uint64_t>(timestamp));
@@ -135,6 +136,7 @@ FoxgloveBridge::FoxgloveBridge(const rclcpp::NodeOptions& options)
 }
 
 FoxgloveBridge::~FoxgloveBridge() {
+  _shuttingDown = true;
   RCLCPP_INFO(this->get_logger(), "Shutting down %s", this->get_name());
   if (_rosgraphPollThread) {
     _rosgraphPollThread->join();
@@ -148,7 +150,7 @@ void FoxgloveBridge::rosgraphPollThread() {
   updateAdvertisedServices();
 
   auto graphEvent = this->get_graph_event();
-  while (rclcpp::ok()) {
+  while (!_shuttingDown && rclcpp::ok()) {
     try {
       this->wait_for_graph_change(graphEvent, 200ms);
       bool triggered = graphEvent->check_and_clear();
@@ -495,7 +497,7 @@ void FoxgloveBridge::subscribe(foxglove::ChannelId channelId, ConnectionHandle c
   rclcpp::QoS qos{rclcpp::KeepLast(depth)};
 
   // If all endpoints are reliable, ask for reliable
-  if (reliabilityReliableEndpointsCount == publisherInfo.size()) {
+  if (!publisherInfo.empty() && reliabilityReliableEndpointsCount == publisherInfo.size()) {
     qos.reliable();
   } else {
     if (reliabilityReliableEndpointsCount > 0) {
@@ -509,7 +511,7 @@ void FoxgloveBridge::subscribe(foxglove::ChannelId channelId, ConnectionHandle c
   }
 
   // If all endpoints are transient_local, ask for transient_local
-  if (durabilityTransientLocalEndpointsCount == publisherInfo.size()) {
+  if (!publisherInfo.empty() && durabilityTransientLocalEndpointsCount == publisherInfo.size()) {
     qos.transient_local();
   } else {
     if (durabilityTransientLocalEndpointsCount > 0) {
@@ -534,7 +536,9 @@ void FoxgloveBridge::subscribe(foxglove::ChannelId channelId, ConnectionHandle c
   try {
     auto subscriber = this->create_generic_subscription(
       topic, datatype, qos,
-      std::bind(&FoxgloveBridge::rosMessageHandler, this, channelId, clientHandle, _1),
+      [this, channelId, clientHandle](std::shared_ptr<const rclcpp::SerializedMessage> msg) {
+        this->rosMessageHandler(channelId, clientHandle, msg);
+      },
       subscriptionOptions);
     subscriptionsByClient.emplace(clientHandle, std::move(subscriber));
   } catch (const std::exception& ex) {
@@ -707,7 +711,11 @@ void FoxgloveBridge::clientMessage(const foxglove::ClientMessage& message, Conne
   rclSerializedMsg.buffer_length = message.getLength();
 
   // Publish the message
-  publisher->publish(serializedMessage);
+  if (_disableLoanMessage || !publisher->can_loan_messages()) {
+    publisher->publish(serializedMessage);
+  } else {
+    publisher->publish_as_loaned_msg(serializedMessage);
+  }
 }
 
 void FoxgloveBridge::setParameters(const std::vector<foxglove::Parameter>& parameters,
@@ -768,7 +776,7 @@ void FoxgloveBridge::logHandler(LogLevel level, char const* msg) {
 
 void FoxgloveBridge::rosMessageHandler(const foxglove::ChannelId& channelId,
                                        ConnectionHandle clientHandle,
-                                       std::shared_ptr<rclcpp::SerializedMessage> msg) {
+                                       std::shared_ptr<const rclcpp::SerializedMessage> msg) {
   // NOTE: Do not call any RCLCPP_* logging functions from this function. Otherwise, subscribing
   // to `/rosout` will cause a feedback loop
   const auto timestamp = this->now().nanoseconds();
