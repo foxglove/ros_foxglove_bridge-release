@@ -81,7 +81,9 @@ private:
   std::vector<std::string> _capabilities;
   std::atomic<bool> _subscribeGraphUpdates = false;
   bool _includeHidden = false;
+  bool _disableLoanMessage = true;
   std::unique_ptr<foxglove::CallbackQueue> _fetchAssetQueue;
+  std::atomic<bool> _shuttingDown = false;
 
   void subscribeConnectionGraph(bool subscribe);
 
@@ -109,7 +111,7 @@ private:
   void logHandler(LogLevel level, char const* msg);
 
   void rosMessageHandler(const foxglove::ChannelId& channelId, ConnectionHandle clientHandle,
-                         std::shared_ptr<rclcpp::SerializedMessage> msg);
+                         std::shared_ptr<const rclcpp::SerializedMessage> msg);
 
   void serviceRequest(const foxglove::ServiceRequest& request, ConnectionHandle clientHandle);
 
