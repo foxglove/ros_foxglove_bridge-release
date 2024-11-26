@@ -1,12 +1,11 @@
 <?xml version="1.0"?>
 <package format="3">
     <name>foxglove_bridge</name>
-    <version>0.7.10</version>
+    <version>0.8.1</version>
     <description>ROS Foxglove Bridge</description>
     <license>MIT</license>
     <url type="website">https://github.com/foxglove/ros-foxglove-bridge</url>
     <author email="ros-tooling+foxglove_bridge@foxglove.dev">Foxglove</author>
-    <maintainer email="john@foxglove.dev">John Hurliman</maintainer>
     <maintainer email="achim@foxglove.dev">Hans-Joachim Krauch</maintainer>
 
     <buildtool_depend condition="$ROS_VERSION == 1">catkin</buildtool_depend>
@@ -22,6 +21,9 @@
     <depend condition="$ROS_VERSION == 2">ament_index_cpp</depend>
     <depend condition="$ROS_VERSION == 2">rclcpp</depend>
     <depend condition="$ROS_VERSION == 2">rclcpp_components</depend>
+
+    <depend condition="$ROS_VERSION == 2">rosx_introspection</depend>
+
 
     <!-- Test dependencies -->
     <test_depend condition="$ROS_VERSION == 1">gtest</test_depend>
